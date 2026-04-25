@@ -8,21 +8,61 @@ use crate::optimizer::*;
 pub const TICK_DURATION: std::time::Duration = std::time::Duration::from_millis(50); // 20 per second
 
 fn main() -> eframe::Result {
-    let ticks = 100;
-    let mut optimizer = Optimizer::from(Pitches::new(ticks));
-    println!(
-        "state after cycle from zero: {:#?}",
-        optimizer.pitches.after_cycle(Vec3::ZERO)
-    );
-
+    // let ticks = 10;
+    // let ticks = 20;
+    // let ticks = 50;
+    // let ticks = 100; // like -6 delta y
+    // let ticks = 150; // like 2 delta y
+    // let ticks = 200;
+    // let ticks = 250;
+    let ticks = 300; // like 20 delta y
+    // let mut optimizer = Optimizer::from(Pitches::new(ticks));
+    let mut optimizer = Optimizer::from(Pitches::new_4040(ticks));
+    let mut optimizing = false;
+    let mut optimization_steps_per_frame: usize = 10;
     eframe::run_ui_native(
         "Elytra Sim",
         eframe::NativeOptions::default(),
         move |ui, _frame| {
+            ui.request_repaint();
             egui::Panel::left("side_panel").show_inside(ui, |ui| {
                 if ui.button("optimization step").clicked() {
                     optimizer.optimization_step();
                 }
+                ui.checkbox(&mut optimizing, "optimizing");
+                ui.label("optimization steps per frame:");
+                ui.add(egui::Slider::new(
+                    &mut optimization_steps_per_frame,
+                    0..=100,
+                ));
+                if optimizing {
+                    for _ in 0..optimization_steps_per_frame {
+                        optimizer.optimization_step();
+                    }
+                }
+
+                ui.label(format!(
+                    "after cycle pos.y: {:.06}",
+                    optimizer.pitches.after_cycle(optimizer.steady_vel).pos.y
+                ));
+                ui.label(format!(
+                    "after cycle pos.z: {:.06}",
+                    optimizer.pitches.after_cycle(optimizer.steady_vel).pos.z
+                ));
+                ui.label(format!("steady vel.y: {:.06}", optimizer.steady_vel.y));
+                ui.label(format!("steady vel.z: {:.06}", optimizer.steady_vel.z));
+
+                // // debug steady state
+                // {
+                //     let steady_vel = optimizer.pitches.steady_vel_guessed(optimizer.steady_vel);
+                //     let cycled = optimizer.pitches.after_cycle(steady_vel);
+                //     ui.label(format!(
+                //         "steady_vel_guessed: ({:.06}, {:.06}, {:.06}), after cycle pos: ({:.06}, {:.06}, {:.06}), vel: ({:.06}, {:.06}, {:.06})",
+                //         steady_vel.x, steady_vel.y, steady_vel.z,
+                //         cycled.pos.x, cycled.pos.y, cycled.pos.z,
+                //         cycled.vel.x, cycled.vel.y, cycled.vel.z,
+                //     ));
+                // }
             });
 
             egui::CentralPanel::default().show_inside(ui, |ui| {
@@ -32,9 +72,19 @@ fn main() -> eframe::Result {
                     let size = rect.size();
                     egui::Rect::from_min_size(rect.min, size)
                 };
+
+                // horizontal center line
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(rect.left(), rect.center().y),
+                        egui::pos2(rect.right(), rect.center().y),
+                    ],
+                    egui::Stroke::new(1.0, egui::Color32::LIGHT_GRAY),
+                );
+
                 for (tick, (state, pitch)) in optimizer
                     .pitches
-                    .cycle(Vec3::ZERO)
+                    .cycle(optimizer.steady_vel)
                     .iter()
                     .zip(optimizer.pitches.0.iter())
                     .enumerate()
@@ -57,7 +107,7 @@ fn main() -> eframe::Result {
 
                     // pitch (pink)
                     {
-                        let y = rect.center().y - (*pitch / 90.0) * (rect.height() / 2.0);
+                        let y = rect.center().y + (*pitch / 90.0) * (rect.height() / 2.0);
                         dot_at(y, 4.0, egui::Color32::from_rgb(252, 3, 198))
                             .on_hover_text(format!("tick: {}, pitch: {}", tick, pitch));
                     }
@@ -94,37 +144,32 @@ fn main() -> eframe::Result {
                             .on_hover_text(format!("tick: {}, vel.z: {}", tick, state.vel.z));
                     }
 
-                    // energy
+                    let energy_scale = 1.0 / 4.0;
+                    // kinetic energy (yellow)
                     {
-                        let energy_scale = 1.0 / 2.0;
-                        // kinetic energy (yellow)
-                        // kilograms * blocks^2 / ticks^2
-                        let ke = state.vel.length_sq() * 0.5;
-                        {
-                            let y = rect.center().y
-                                - (ke as f32 * energy_scale) * (rect.height() / 2.0);
-                            dot_at(y, 4.0, egui::Color32::from_rgb(235, 214, 52))
-                                .on_hover_text(format!("tick: {}, kinetic energy: {}", tick, ke));
-                        }
+                        let ke = state.kinetic_energy();
+                        let y =
+                            rect.center().y - (ke as f32 * energy_scale) * (rect.height() / 2.0);
+                        dot_at(y, 4.0, egui::Color32::from_rgb(235, 214, 52))
+                            .on_hover_text(format!("tick: {}, kinetic energy: {}", tick, ke));
+                    }
 
-                        // potential energy (red)
-                        // kilograms * blocks^2 / ticks^2
-                        let pe = state.pos.y * GRAVITY;
-                        {
-                            let y = rect.center().y
-                                - (pe as f32 * energy_scale) * (rect.height() / 2.0);
-                            dot_at(y, 4.0, egui::Color32::from_rgb(255, 0, 0))
-                                .on_hover_text(format!("tick: {}, potential energy: {}", tick, pe));
-                        }
+                    // potential energy (red)
+                    {
+                        let pe = state.potential_energy();
+                        let y =
+                            rect.center().y - (pe as f32 * energy_scale) * (rect.height() / 2.0);
+                        dot_at(y, 4.0, egui::Color32::from_rgb(255, 0, 0))
+                            .on_hover_text(format!("tick: {}, potential energy: {}", tick, pe));
+                    }
 
-                        // total energy (orange)
-                        {
-                            let energy = ke + pe;
-                            let y = rect.center().y
-                                - (energy as f32 * energy_scale) * (rect.height() / 2.0);
-                            dot_at(y, 4.0, egui::Color32::from_rgb(235, 143, 52))
-                                .on_hover_text(format!("tick: {}, total energy: {}", tick, energy));
-                        }
+                    // total energy (orange)
+                    {
+                        let energy = state.total_energy();
+                        let y = rect.center().y
+                            - (energy as f32 * energy_scale) * (rect.height() / 2.0);
+                        dot_at(y, 4.0, egui::Color32::from_rgb(235, 143, 52))
+                            .on_hover_text(format!("tick: {}, total energy: {}", tick, energy));
                     }
                 }
             });
