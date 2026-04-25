@@ -1,6 +1,11 @@
 use crate::sim::*;
 
 type Goodness = f64;
+pub type Pos = Vec3;
+pub type Vel = Vec3;
+pub type Energy = f64;
+pub type Pitch = f32;
+pub type DeltaPitch = f32;
 
 fn approx_eq_f32(a: f32, b: f32) -> bool {
     assert!(a.is_finite());
@@ -14,18 +19,37 @@ fn approx_eq_f64(a: f64, b: f64) -> bool {
     (a - b).abs() < 0.001
 }
 
-fn clamp_pitch(pitch: &mut f32) {
+fn clamp_pitch(pitch: &mut Pitch) {
     *pitch = pitch.clamp(-90.0, 90.0);
 }
 
-fn clamped_pitch(pitch: f32) -> f32 {
+fn clamped_pitch(pitch: Pitch) -> Pitch {
+    debug_assert!(pitch.is_finite());
     pitch.clamp(-90.0, 90.0)
+}
+
+// #[derive(Debug, Clone)]
+// pub enum OptimizationStrategy {
+//     FixedDelta { delta: DeltaPitch },
+//     GradientDescent { learning_rate: f64 },
+// }
+// impl Default for OptimizationStrategy {
+//     fn default() -> Self {
+//         Self::GradientDescent {
+//             learning_rate: 500.0,
+//         }
+//     }
+// }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OptimizationStrategy {
+    GradientDescent,
+    FixedDelta,
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct State {
-    pub pos: Vec3,
-    pub vel: Vec3,
+    pub pos: Pos,
+    pub vel: Vel,
 }
 impl State {
     pub fn ticked(&self, rot: Rot) -> Self {
@@ -39,17 +63,17 @@ impl State {
     }
 
     /// kilograms * blocks^2 / ticks^2
-    pub fn kinetic_energy(&self) -> f64 {
+    pub fn kinetic_energy(&self) -> Energy {
         self.vel.length_sq() * 0.5
     }
 
     /// kilograms * blocks^2 / ticks^2
-    pub fn potential_energy(&self) -> f64 {
+    pub fn potential_energy(&self) -> Energy {
         self.pos.y * GRAVITY
     }
 
     /// kilograms * blocks^2 / ticks^2
-    pub fn total_energy(&self) -> f64 {
+    pub fn total_energy(&self) -> Energy {
         self.kinetic_energy() + self.potential_energy()
     }
 
@@ -78,13 +102,31 @@ impl From<Entity> for State {
 #[derive(Debug, Clone)]
 pub struct Pitches(pub Vec<f32>);
 impl Pitches {
-    pub fn new(ticks: usize) -> Self {
-        Self(vec![0.0; ticks])
+    // /// look at 0 for all ticks.
+    // pub fn new_0(ticks: usize) -> Self {
+    //     Self(vec![0.0; ticks])
+    // }
+
+    /// look at `pitch` for all ticks.
+    pub fn new_uniform(ticks: usize, pitch: Pitch) -> Self {
+        Self(vec![pitch; ticks])
     }
 
-    /// positive for the first half, negative for the second.
-    pub fn new_4040(ticks: usize) -> Self {
-        let mid = ticks / 2;
+    /// lerp from start to end over the ticks.
+    pub fn new_lerp(ticks: usize, start: Pitch, end: Pitch) -> Self {
+        Self(
+            (0..ticks)
+                .map(|i| {
+                    let t = i as f32 / (ticks - 1) as f32;
+                    start * (1.0 - t) + end * t
+                })
+                .collect(),
+        )
+    }
+
+    /// +40 then -40.
+    pub fn new_4040(ticks: usize, cut: f64) -> Self {
+        let mid = (ticks as f64 * cut) as usize;
         Self(
             (0..mid)
                 .map(|_| 40.0)
@@ -93,51 +135,66 @@ impl Pitches {
         )
     }
 
-    // /// of len self.0.len() + 1
-    // pub fn cycle(&self, init_vel: Vec3) -> Vec<State> {
-    //     let mut states = Vec::with_capacity(self.0.len() + 1);
-    //     let mut cur = State {
-    //         pos: Vec3::ZERO,
-    //         vel: init_vel,
-    //     };
-    //     states.push(cur.clone());
-    //     for pitch in self.0.iter() {
-    //         let rot = Rot { x: *pitch, y: 0.0 };
-    //         cur = cur.ticked(rot);
-    //         states.push(cur.clone());
-    //     }
-    //     states
-    // }
-    /// of len self.0.len()
-    pub fn cycle(&self, init_vel: Vec3) -> Vec<State> {
-        let mut states = Vec::with_capacity(self.0.len() + 1);
+    /// +40 then 0 then -40.
+    pub fn new_40zero40(ticks: usize, left_cut: f64, right_cut: f64) -> Self {
+        assert!(left_cut < right_cut);
+        let left = (ticks as f64 * left_cut) as usize;
+        let right = (ticks as f64 * right_cut) as usize;
+        Self(
+            (0..left)
+                .map(|_| 40.0)
+                .chain((left..right).map(|_| 0.0))
+                .chain((right..ticks).map(|_| -40.0))
+                .collect(),
+        )
+    }
+
+    /// +40 then 0 then lerp down.
+    pub fn new_4000lerp(ticks: usize) -> Self {
+        const LEFT_CUT: f64 = 0.5;
+        const RIGHT_CUT: f64 = 0.7;
+        assert!(LEFT_CUT < RIGHT_CUT);
+        let left = (ticks as f64 * LEFT_CUT) as usize;
+        let right = (ticks as f64 * RIGHT_CUT) as usize;
+        Self(
+            (0..left)
+                .map(|_| 40.0)
+                .chain((left..right).map(|_| 0.0))
+                .chain((right..ticks).map(|_| -40.0))
+                .collect(),
+        )
+    }
+
+    /// the state at each tick *after* applying the pitches.
+    /// so `init_vel` isn't `ret[0].vel`.
+    /// we have `ret.len() == self.0.len()`.
+    pub fn cycle(&self, init_vel: Vel) -> impl Iterator<Item = State> {
+        // let mut states = Vec::with_capacity(self.0.len());
         let mut cur = State {
-            pos: Vec3::ZERO,
+            pos: Pos::ZERO,
             vel: init_vel,
         };
-        for pitch in self.0.iter() {
+        self.0.iter().map(move |pitch| {
             let rot = Rot { x: *pitch, y: 0.0 };
             cur = cur.ticked(rot);
-            states.push(cur.clone());
-        }
-        states
+            cur.clone()
+        })
+        // for pitch in self.0.iter() {
+        //     let rot = Rot { x: *pitch, y: 0.0 };
+        //     cur = cur.ticked(rot);
+        //     states.push(cur.clone());
+        // }
+        // states
     }
 
     /// given this init velocity, return the state after applying the pitches.
-    pub fn after_cycle(&self, vel: Vec3) -> State {
-        let mut cur = State {
-            pos: Vec3::ZERO,
-            vel,
-        };
-        for pitch in self.0.iter() {
-            let rot = Rot { x: *pitch, y: 0.0 };
-            cur = cur.ticked(rot);
-        }
-        cur
+    // /// `None` if we're empty.
+    pub fn after_cycle(&self, init_vel: Vel) -> State {
+        self.cycle(init_vel).last().expect("`Pitches` is empty")
     }
 
     /// init vel is a guess at the stead state velocity.
-    pub fn steady_vel_guessed(&self, steady_vel_guess: Vec3) -> Vec3 {
+    pub fn steady_vel_guessed(&self, steady_vel_guess: Vel) -> Vel {
         let mut state = self.after_cycle(steady_vel_guess);
         loop {
             let next = self.after_cycle(state.vel);
@@ -152,67 +209,31 @@ impl Pitches {
         state.vel
     }
 
-    // /// factor out bc we may have better heuristics in the future.
-    // pub fn steady_vel(&self) -> Vec3 {
-    //     self.steady_vel_guessed(Vec3::ZERO)
-    // }
-
+    /// clamp each pitch.
     fn clamp(&mut self) {
         for pitch in self.0.iter_mut() {
-            debug_assert!(pitch.is_finite());
             clamp_pitch(pitch);
         }
     }
-}
 
-#[derive(Debug, Clone)]
-pub struct Optimizer<const STEADY_STATE: bool> {
-    /// doesn't need to be exactly to maintain the invariant of the type,
-    /// but should only diverge when inside the api boundary.
-    /// outside the api, it should be exact.
-    pub steady_vel: Vec3,
-    pub pitches: Pitches,
-}
-impl<const STEADY_STATE: bool> Optimizer<STEADY_STATE> {
-    /// not gradient decent
-    fn optimization_step_pitch_not_gradient_decent(&mut self, pitch_i: usize) {
+    /// the gradient of goodness with respect to the pitch at index i.
+    ///
+    /// for central difference, we do goodness after a cycle,
+    /// rather than goodness after steady state,
+    /// because it's more differentiable that way.
+    /// (also also cheaper)
+    ///
+    /// &mut self bc we want to modify self in place instead of cloning,
+    /// but we guarantee that we won't be different after return.
+    fn grad_i(&mut self, init_vel: Vel, pitch_i: usize) -> DeltaPitch {
         const EPSILON: f64 = 0.1;
 
-        let cur_pitch = self.pitches.0[pitch_i];
-        let cur_goodness = self.pitches.after_cycle(self.steady_vel).goodness();
-
-        // TODO: do goodness after steady state instead of assuming it's the same for the delta
-        let right_pitch = cur_pitch + EPSILON as f32;
-        if right_pitch == clamped_pitch(right_pitch) {
-            self.pitches.0[pitch_i] = right_pitch;
-            let right_goodness = self.pitches.after_cycle(self.steady_vel).goodness();
-            if right_goodness > cur_goodness {
-                return;
-            }
-        }
-
-        let left_pitch = cur_pitch - EPSILON as f32;
-        if left_pitch == clamped_pitch(left_pitch) {
-            self.pitches.0[pitch_i] = left_pitch;
-            let left_goodness = self.pitches.after_cycle(self.steady_vel).goodness();
-            if left_goodness > cur_goodness {
-                return;
-            }
-        }
-
-        self.pitches.0[pitch_i] = cur_pitch;
-    }
-
-    /// gradient decent
-    fn optimization_step_pitch_gradient_descent(&mut self, pitch_i: usize, learning_rate: f64) {
-        const EPSILON: f64 = 0.1;
-
-        let cur_pitch = self.pitches.0[pitch_i];
+        let cur_pitch = self.0[pitch_i];
 
         let right_pitch = cur_pitch + EPSILON as f32;
         let right_goodness = if right_pitch == clamped_pitch(right_pitch) {
-            self.pitches.0[pitch_i] = right_pitch;
-            Some(self.pitches.after_cycle(self.steady_vel).goodness())
+            self.0[pitch_i] = right_pitch;
+            Some(self.after_cycle(init_vel).goodness())
             // let mut slf = self.clone();
             // slf.pitches.0[pitch_i] = right_pitch;
             // slf.steady_vel = slf.pitches.steady_vel_guessed(slf.steady_vel);
@@ -223,8 +244,8 @@ impl<const STEADY_STATE: bool> Optimizer<STEADY_STATE> {
 
         let left_pitch = cur_pitch - EPSILON as f32;
         let left_goodness = if left_pitch == clamped_pitch(left_pitch) {
-            self.pitches.0[pitch_i] = left_pitch;
-            Some(self.pitches.after_cycle(self.steady_vel).goodness())
+            self.0[pitch_i] = left_pitch;
+            Some(self.after_cycle(init_vel).goodness())
             // let mut slf = self.clone();
             // slf.pitches.0[pitch_i] = left_pitch;
             // slf.steady_vel = slf.pitches.steady_vel_guessed(slf.steady_vel);
@@ -234,14 +255,15 @@ impl<const STEADY_STATE: bool> Optimizer<STEADY_STATE> {
         };
 
         // only compute this if we need to, otherwise we can use central difference
+        self.0[pitch_i] = cur_pitch;
         let cur_goodness = if left_goodness.is_none() || right_goodness.is_none() {
-            self.pitches.0[pitch_i] = cur_pitch;
-            Some(self.pitches.after_cycle(self.steady_vel).goodness())
+            // TODO: cache this
+            Some(self.after_cycle(init_vel).goodness())
         } else {
             None
         };
 
-        let grad = match (left_goodness, right_goodness) {
+        (match (left_goodness, right_goodness) {
             // central difference if we can
             (Some(left_goodness), Some(right_goodness)) => {
                 (right_goodness - left_goodness) / (2.0 * EPSILON)
@@ -249,40 +271,163 @@ impl<const STEADY_STATE: bool> Optimizer<STEADY_STATE> {
             (None, Some(right_goodness)) => (right_goodness - cur_goodness.unwrap()) / EPSILON,
             (Some(left_goodness), None) => (cur_goodness.unwrap() - left_goodness) / EPSILON,
             (None, None) => unreachable!(),
-        };
-
-        let delta_pitch = ((learning_rate * grad) as f32).clamp(-5.0, 5.0);
-        self.pitches.0[pitch_i] = clamped_pitch(cur_pitch + delta_pitch);
+        }) as f32
     }
 
-    /// apply one step of optimization to the pitches.
-    pub fn optimization_step(&mut self, learning_rate: f64) {
-        for i in 0..self.pitches.0.len() {
-            // self.optimization_step_pitch_not_gradient_decent(i);
-            self.optimization_step_pitch_gradient_descent(i, learning_rate);
-            self.pitches.clamp();
-        }
-        self.steady_vel = if STEADY_STATE {
-            self.pitches.steady_vel_guessed(self.steady_vel)
-        } else {
-            Vec3::ZERO
-        };
+    /// &mut self bc we want to modify self in place instead of cloning,
+    /// but we guarantee that we won't be different after return.
+    fn grad(&mut self, init_vel: Vel) -> impl Iterator<Item = DeltaPitch> {
+        (0..self.0.len()).map(move |i| self.grad_i(init_vel, i))
     }
-}
-impl From<Pitches> for Optimizer<false> {
-    fn from(pitches: Pitches) -> Self {
-        Self {
-            steady_vel: Vec3::ZERO,
-            pitches,
+
+    /// applies one step of gradient descent.
+    fn gradient_descent_step(&mut self, init_vel: Vel, learning_rate: f64) {
+        let grads = self.grad(init_vel).collect::<Vec<_>>();
+        // TODO: try normalizing
+        for (i, grad) in grads.into_iter().enumerate() {
+            let cur_pitch = self.0[i];
+            let delta_pitch = ((learning_rate as f32) * grad).clamp(-5.0, 5.0);
+            self.0[i] = clamped_pitch(cur_pitch + delta_pitch);
         }
     }
+
+    /// look try adding and subtracting delta to the pitch at index i,
+    /// and return the delta that improves goodness the most,
+    /// or return 0.0 if neither improves goodness.
+    ///
+    /// &mut self bc we want to modify self in place instead of cloning,
+    /// but we guarantee that we won't be different after return.
+    fn fixed_delta_i(&mut self, init_vel: Vel, delta: DeltaPitch, pitch_i: usize) -> DeltaPitch {
+        let cur_pitch = self.0[pitch_i];
+        // TODO: cache this
+        let cur_goodness = self.after_cycle(init_vel).goodness();
+
+        // TODO: try doing goodness after steady state
+        // instead of assuming it's the same for the delta.
+        // actually i think it's better to not update steady state,
+        // because it's more differentiable that way.
+        // or actually that doesn't apply for this, only for grad.
+        let right_pitch = cur_pitch + delta as f32;
+        if right_pitch == clamped_pitch(right_pitch) {
+            self.0[pitch_i] = right_pitch;
+            let right_goodness = self.after_cycle(init_vel).goodness();
+            self.0[pitch_i] = cur_pitch;
+            if right_goodness > cur_goodness {
+                return delta;
+            }
+        }
+
+        let left_pitch = cur_pitch - delta as f32;
+        if left_pitch == clamped_pitch(left_pitch) {
+            self.0[pitch_i] = left_pitch;
+            let left_goodness = self.after_cycle(init_vel).goodness();
+            self.0[pitch_i] = cur_pitch;
+            if left_goodness > cur_goodness {
+                return -delta;
+            }
+        }
+
+        0.0
+    }
+
+    /// &mut self bc we want to modify self in place instead of cloning,
+    /// but we guarantee that we won't be different after return.
+    fn fixed_delta(
+        &mut self,
+        init_vel: Vel,
+        delta: DeltaPitch,
+    ) -> impl Iterator<Item = DeltaPitch> {
+        (0..self.0.len()).map(move |i| self.fixed_delta_i(init_vel, delta, i))
+    }
+
+    /// applies one step of fixed delta descent to the pitches.
+    fn fixed_delta_step(&mut self, init_vel: Vel, delta: DeltaPitch) {
+        let deltas = self.fixed_delta(init_vel, delta).collect::<Vec<_>>();
+        for (i, delta) in deltas.into_iter().enumerate() {
+            let cur_pitch = self.0[i];
+            self.0[i] = clamped_pitch(cur_pitch + delta);
+        }
+    }
 }
-impl From<Pitches> for Optimizer<true> {
-    fn from(pitches: Pitches) -> Self {
-        let steady_vel = pitches.steady_vel_guessed(Vec3::ZERO);
+
+/// optimize with the constraint that
+/// our velocity is the same before and after applying the pitches for a cycle.
+/// (we find this by iterating the cycle until it converges)
+#[derive(Debug, Clone)]
+pub struct OptimizerSteadyState {
+    pub steady_vel: Vel,
+    pub pitches: Pitches,
+}
+impl OptimizerSteadyState {
+    /// steady_vel_guessed doesn't need to be good,
+    /// but if you don't have any guess, use [`Self::new`] instead.
+    pub fn from_guessed(steady_vel_guessed: Vel, pitches: Pitches) -> Self {
+        let steady_vel = pitches.steady_vel_guessed(steady_vel_guessed);
         Self {
             steady_vel,
             pitches,
         }
+    }
+
+    /// if you have a guess for the steady state velocity,
+    /// you can use [`Self::from_guessed`] instead.
+    pub fn new(pitches: Pitches) -> Self {
+        // just use Vel::ZERO as the guess.
+        // this is mostly to document that you don't have a guess.
+        Self::from_guessed(Vel::ZERO, pitches)
+    }
+
+    /// applies one step of gradient descent to the pitches,
+    /// and updates the init_vel to be the new steady state velocity.
+    // TODO: cache the value of forward passes.
+    pub fn gradient_descent_step(&mut self, learning_rate: f64) {
+        self.pitches
+            .gradient_descent_step(self.steady_vel, learning_rate);
+        self.steady_vel = self.pitches.steady_vel_guessed(self.steady_vel)
+    }
+
+    /// applies one step of gradient descent to the pitches,
+    /// and updates the init_vel to be the new steady state velocity.
+    // TODO: cache the value of forward passes.
+    pub fn fixed_delta_step(&mut self, delta: DeltaPitch) {
+        self.pitches.fixed_delta_step(self.steady_vel, delta);
+        self.steady_vel = self.pitches.steady_vel_guessed(self.steady_vel)
+    }
+
+    /// cursed hack bc i don't want to make a trait.
+    /// (i'm commenting out stuff to toggle between `OptimizerSteadState` and `OptimizerInitState`)
+    pub fn init_vel(&self) -> Vel {
+        self.steady_vel
+    }
+}
+
+/// optimize from a fixed initial velocity.
+#[derive(Debug, Clone)]
+pub struct OptimizerInitState {
+    pub init_vel: Vel,
+    pub pitches: Pitches,
+}
+impl OptimizerInitState {
+    pub fn new(init_vel: Vel, pitches: Pitches) -> Self {
+        Self { init_vel, pitches }
+    }
+
+    /// applies one step of gradient descent to the pitches.
+    /// the init_vel doesn't change.
+    // TODO: cache the value of forward passes.
+    pub fn gradient_descent_step(&mut self, learning_rate: f64) {
+        self.pitches
+            .gradient_descent_step(self.init_vel, learning_rate);
+    }
+
+    /// applies one step of fixed delta descent to the pitches.
+    /// the init_vel doesn't change.
+    // TODO: cache the value of forward passes.
+    pub fn fixed_delta_step(&mut self, delta: DeltaPitch) {
+        self.pitches.fixed_delta_step(self.init_vel, delta);
+    }
+
+    pub fn init_vel(&self) -> Vel {
+        self.init_vel
     }
 }

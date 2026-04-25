@@ -5,6 +5,7 @@ use sim::*;
 
 use crate::optimizer::*;
 
+pub const TICKS_PER_SECOND: u8 = 20;
 pub const TICK_DURATION: std::time::Duration = std::time::Duration::from_millis(50); // 20 per second
 
 fn main() -> eframe::Result {
@@ -18,55 +19,130 @@ fn main() -> eframe::Result {
     let ticks = 300; // like 20 delta y
     // let ticks = 500;
 
-    // let mut optimizer = Optimizer::<false>::from(Pitches::new(ticks));
-    // let mut optimizer = Optimizer::<false>::from(Pitches::new_4040(ticks));
-    // let mut optimizer = Optimizer::<true>::from(Pitches::new(ticks));
-    let mut optimizer = Optimizer::<true>::from(Pitches::new_4040(ticks));
+    let mut optimizer = {
+        // let pitches = Pitches::new_uniform(ticks, 0.0);
+        // let pitches = Pitches::new_4040(ticks, 0.5);
+        // let pitches = Pitches::new_4040(ticks, 0.65);
+        let pitches = Pitches::new_40zero40(ticks, 0.65, 0.75);
+
+        // OptimizerInitState::new(Vel::ZERO, pitches)
+        OptimizerSteadyState::new(pitches)
+    };
+
+    let mut optimization_strategy = OptimizationStrategy::GradientDescent;
+    // for the gradient descent strategy
+    let mut learning_rate = 500.0;
+    // for the fixed delta strategy
+    let mut fixed_delta = 0.1;
+
     let mut optimizing = false;
     let mut optimization_steps_per_frame: usize = 10;
-    let mut learning_rate = 500.0;
+
     eframe::run_ui_native(
         "Elytra Sim",
         eframe::NativeOptions::default(),
         move |ui, _frame| {
             ui.request_repaint();
             egui::Panel::left("side_panel").show_inside(ui, |ui| {
-                if ui.button("optimization step").clicked() {
-                    optimizer.optimization_step(learning_rate);
-                }
-                ui.checkbox(&mut optimizing, "optimizing");
-                ui.label("optimization steps per frame:");
-                ui.add(egui::Slider::new(
-                    &mut optimization_steps_per_frame,
-                    0..=100,
-                ));
-                ui.label("learning rate:");
-                ui.add(egui::Slider::new(&mut learning_rate, 10.0..=10000.0).logarithmic(true));
+                // increase / decrease ticks (and perhaps other parameters later)
+                ui.group(|ui| {
+                    // increase / decrease ticks
+                    ui.horizontal(|ui| {
+                        let mul = if ui.ctx().input(|i| i.modifiers.shift) {
+                            10
+                        } else {
+                            1
+                        };
+
+                        ui.label(format!("ticks: {}", optimizer.pitches.0.len()));
+                        if ui.button("-").on_hover_text("hold shift for 10x").clicked() {
+                            for _ in 0..mul {
+                                optimizer.pitches.0.pop();
+                            }
+                        }
+                        if ui.button("+").on_hover_text("hold shift for 10x").clicked() {
+                            for _ in 0..mul {
+                                optimizer
+                                    .pitches
+                                    .0
+                                    .push(*optimizer.pitches.0.last().unwrap_or(&0.0));
+                            }
+                        }
+                    });
+                });
+
+                // optimization on / off
+                ui.group(|ui| {
+                    if ui.button("optimization step").clicked() {
+                        match optimization_strategy {
+                            OptimizationStrategy::GradientDescent => {
+                                optimizer.gradient_descent_step(learning_rate)
+                            }
+                            OptimizationStrategy::FixedDelta => {
+                                optimizer.fixed_delta_step(fixed_delta)
+                            }
+                        }
+                    }
+                    ui.checkbox(&mut optimizing, "optimizing");
+                    ui.label("optimization steps per frame:");
+                    ui.add(egui::Slider::new(
+                        &mut optimization_steps_per_frame,
+                        0..=100,
+                    ));
+                });
+
+                // optimizer parameters
+                ui.group(|ui| {
+                    ui.label("optimization strategy:");
+                    egui::ComboBox::from_id_salt(egui::Id::new("optimization strategy"))
+                        .selected_text(match optimization_strategy {
+                            OptimizationStrategy::GradientDescent => "gradient descent",
+                            OptimizationStrategy::FixedDelta => "fixed delta",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut optimization_strategy,
+                                OptimizationStrategy::GradientDescent,
+                                "gradient descent",
+                            );
+                            ui.selectable_value(
+                                &mut optimization_strategy,
+                                OptimizationStrategy::FixedDelta,
+                                "fixed delta",
+                            );
+                        });
+
+                    ui.label("learning rate:");
+                    ui.add(egui::Slider::new(&mut learning_rate, 10.0..=10000.0).logarithmic(true));
+
+                    ui.label("fixed delta:");
+                    ui.add(egui::Slider::new(&mut fixed_delta, 0.0..=1.0));
+                });
+
+                // do the optimization steps
                 if optimizing {
                     for _ in 0..optimization_steps_per_frame {
-                        optimizer.optimization_step(learning_rate);
+                        match optimization_strategy {
+                            OptimizationStrategy::GradientDescent => {
+                                optimizer.gradient_descent_step(learning_rate)
+                            }
+                            OptimizationStrategy::FixedDelta => {
+                                optimizer.fixed_delta_step(fixed_delta)
+                            }
+                        }
                     }
                 }
 
-                let after = optimizer.pitches.after_cycle(optimizer.steady_vel);
-                ui.label(format!("after pos.y: {:.06}", after.pos.y));
-                ui.label(format!("after pos.z: {:.06}", after.pos.z));
-                ui.label(format!("before vel.y: {:.06}", optimizer.steady_vel.y));
-                ui.label(format!("before vel.z: {:.06}", optimizer.steady_vel.z));
-                ui.label(format!("after vel.y: {:.06}", after.vel.y));
-                ui.label(format!("after vel.z: {:.06}", after.vel.z));
-
-                // // debug steady state
-                // {
-                //     let steady_vel = optimizer.pitches.steady_vel_guessed(optimizer.steady_vel);
-                //     let cycled = optimizer.pitches.after_cycle(steady_vel);
-                //     ui.label(format!(
-                //         "steady_vel_guessed: ({:.06}, {:.06}, {:.06}), after cycle pos: ({:.06}, {:.06}, {:.06}), vel: ({:.06}, {:.06}, {:.06})",
-                //         steady_vel.x, steady_vel.y, steady_vel.z,
-                //         cycled.pos.x, cycled.pos.y, cycled.pos.z,
-                //         cycled.vel.x, cycled.vel.y, cycled.vel.z,
-                //     ));
-                // }
+                ui.group(|ui| {
+                    let init_vel = optimizer.init_vel();
+                    ui.label(format!("before vel.y: {:.06}", init_vel.y));
+                    ui.label(format!("before vel.z: {:.06}", init_vel.z));
+                    let after = optimizer.pitches.after_cycle(init_vel);
+                    ui.label(format!("after vel.y: {:.06}", after.vel.y));
+                    ui.label(format!("after vel.z: {:.06}", after.vel.z));
+                    ui.label(format!("after pos.y: {:.06}", after.pos.y));
+                    ui.label(format!("after pos.z: {:.06}", after.pos.z));
+                });
             });
 
             egui::CentralPanel::default().show_inside(ui, |ui| {
@@ -88,11 +164,10 @@ fn main() -> eframe::Result {
 
                 // vertical lines for seconds
                 {
-                    let ticks_per_second = 20;
-                    let seconds = optimizer.pitches.0.len() as f32 / ticks_per_second as f32;
+                    let seconds = optimizer.pitches.0.len() as f32 / TICKS_PER_SECOND as f32;
                     for second in 0..=seconds.ceil() as usize {
                         let x = rect.left()
-                            + (second as f32 * ticks_per_second as f32
+                            + (second as f32 * TICKS_PER_SECOND as f32
                                 / optimizer.pitches.0.len() as f32)
                                 * rect.width();
                         ui.painter().line_segment(
@@ -104,8 +179,7 @@ fn main() -> eframe::Result {
 
                 for (tick, (state, pitch)) in optimizer
                     .pitches
-                    .cycle(optimizer.steady_vel)
-                    .iter()
+                    .cycle(optimizer.init_vel())
                     .zip(optimizer.pitches.0.iter())
                     .enumerate()
                 {
