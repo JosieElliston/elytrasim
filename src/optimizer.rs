@@ -225,14 +225,14 @@ impl Pitches {
     ///
     /// &mut self bc we want to modify self in place instead of cloning,
     /// but we guarantee that we won't be different after return.
-    fn grad_i(&mut self, init_vel: Vel, pitch_i: usize) -> DeltaPitch {
+    pub fn grad_at_tick(&mut self, init_vel: Vel, tick: usize) -> DeltaPitch {
         const EPSILON: f64 = 0.1;
 
-        let cur_pitch = self.0[pitch_i];
+        let cur_pitch = self.0[tick];
 
         let right_pitch = cur_pitch + EPSILON as f32;
         let right_goodness = if right_pitch == clamped_pitch(right_pitch) {
-            self.0[pitch_i] = right_pitch;
+            self.0[tick] = right_pitch;
             Some(self.after_cycle(init_vel).goodness())
             // let mut slf = self.clone();
             // slf.pitches.0[pitch_i] = right_pitch;
@@ -244,7 +244,7 @@ impl Pitches {
 
         let left_pitch = cur_pitch - EPSILON as f32;
         let left_goodness = if left_pitch == clamped_pitch(left_pitch) {
-            self.0[pitch_i] = left_pitch;
+            self.0[tick] = left_pitch;
             Some(self.after_cycle(init_vel).goodness())
             // let mut slf = self.clone();
             // slf.pitches.0[pitch_i] = left_pitch;
@@ -255,7 +255,7 @@ impl Pitches {
         };
 
         // only compute this if we need to, otherwise we can use central difference
-        self.0[pitch_i] = cur_pitch;
+        self.0[tick] = cur_pitch;
         let cur_goodness = if left_goodness.is_none() || right_goodness.is_none() {
             // TODO: cache this
             Some(self.after_cycle(init_vel).goodness())
@@ -277,7 +277,7 @@ impl Pitches {
     /// &mut self bc we want to modify self in place instead of cloning,
     /// but we guarantee that we won't be different after return.
     fn grad(&mut self, init_vel: Vel) -> impl Iterator<Item = DeltaPitch> {
-        (0..self.0.len()).map(move |i| self.grad_i(init_vel, i))
+        (0..self.0.len()).map(move |i| self.grad_at_tick(init_vel, i))
     }
 
     /// applies one step of gradient descent.
@@ -297,8 +297,8 @@ impl Pitches {
     ///
     /// &mut self bc we want to modify self in place instead of cloning,
     /// but we guarantee that we won't be different after return.
-    fn fixed_delta_i(&mut self, init_vel: Vel, delta: DeltaPitch, pitch_i: usize) -> DeltaPitch {
-        let cur_pitch = self.0[pitch_i];
+    fn fixed_delta_at_tick(&mut self, init_vel: Vel, delta: DeltaPitch, tick: usize) -> DeltaPitch {
+        let cur_pitch = self.0[tick];
         // TODO: cache this
         let cur_goodness = self.after_cycle(init_vel).goodness();
 
@@ -309,9 +309,9 @@ impl Pitches {
         // or actually that doesn't apply for this, only for grad.
         let right_pitch = cur_pitch + delta as f32;
         if right_pitch == clamped_pitch(right_pitch) {
-            self.0[pitch_i] = right_pitch;
+            self.0[tick] = right_pitch;
             let right_goodness = self.after_cycle(init_vel).goodness();
-            self.0[pitch_i] = cur_pitch;
+            self.0[tick] = cur_pitch;
             if right_goodness > cur_goodness {
                 return delta;
             }
@@ -319,9 +319,9 @@ impl Pitches {
 
         let left_pitch = cur_pitch - delta as f32;
         if left_pitch == clamped_pitch(left_pitch) {
-            self.0[pitch_i] = left_pitch;
+            self.0[tick] = left_pitch;
             let left_goodness = self.after_cycle(init_vel).goodness();
-            self.0[pitch_i] = cur_pitch;
+            self.0[tick] = cur_pitch;
             if left_goodness > cur_goodness {
                 return -delta;
             }
@@ -337,7 +337,7 @@ impl Pitches {
         init_vel: Vel,
         delta: DeltaPitch,
     ) -> impl Iterator<Item = DeltaPitch> {
-        (0..self.0.len()).map(move |i| self.fixed_delta_i(init_vel, delta, i))
+        (0..self.0.len()).map(move |i| self.fixed_delta_at_tick(init_vel, delta, i))
     }
 
     /// applies one step of fixed delta descent to the pitches.

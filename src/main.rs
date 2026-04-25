@@ -23,7 +23,7 @@ fn main() -> eframe::Result {
         // let pitches = Pitches::new_uniform(ticks, 0.0);
         // let pitches = Pitches::new_4040(ticks, 0.5);
         // let pitches = Pitches::new_4040(ticks, 0.65);
-        let pitches = Pitches::new_40zero40(ticks, 0.65, 0.75);
+        let pitches = Pitches::new_40zero40(ticks, 0.65, 0.70);
 
         // OptimizerInitState::new(Vel::ZERO, pitches)
         OptimizerSteadyState::new(pitches)
@@ -185,65 +185,75 @@ fn main() -> eframe::Result {
                 {
                     let x = rect.left()
                         + (tick as f32 / optimizer.pitches.0.len() as f32) * rect.width();
+
+                    let value_to_y = |value: f32, approx_max_value: f32| {
+                        rect.center().y - (value / approx_max_value) * (rect.height() / 2.0)
+                    };
+
                     let mut dot_at = |y: f32, rad: f32, color: egui::Color32| {
                         let dot_rect = egui::Rect::from_center_size(
                             egui::Pos2::new(x, y),
                             egui::Vec2::splat(10.0),
                         );
-                        let response = ui.allocate_rect(dot_rect, egui::Sense::hover());
+                        let r = ui.allocate_rect(dot_rect, egui::Sense::hover());
                         ui.painter().circle_filled(egui::pos2(x, y), rad, color);
-                        // response.on_hover_text(format!(
-                        //     "tick {}:\napplied pitch {:.2}\nresulting state: {:#?}",
-                        //     i, pitch, state
-                        // ));
-                        response
+                        r
                     };
 
                     // pitch (pink)
                     {
-                        let y = rect.center().y + (*pitch / 90.0) * (rect.height() / 2.0);
+                        let y = value_to_y(-*pitch, 90.0);
                         dot_at(y, 4.0, egui::Color32::from_rgb(252, 3, 198))
                             .on_hover_text(format!("tick: {}, pitch: {}", tick, pitch));
                     }
 
+                    // pitch gradient (purple)
+                    // actually this just goes to zero, so it's not very interesting
+                    #[cfg(false)]
+                    {
+                        // this is for the ui, just clone it.
+                        let mut pitches = optimizer.pitches.clone();
+                        let grad = pitches.grad_at_tick(optimizer.init_vel(), tick);
+                        let approx_max_grad = 0.01;
+                        let grad = grad.clamp(-approx_max_grad, approx_max_grad);
+                        let y = value_to_y(-grad, approx_max_grad);
+                        dot_at(y, 4.0, egui::Color32::from_rgb(128, 0, 128))
+                            .on_hover_text(format!("tick: {}, pitch gradient: {}", tick, grad));
+                    }
+
                     // pos.y (dark green)
                     {
-                        let y =
-                            rect.center().y - (state.pos.y as f32 / 100.0) * (rect.height() / 2.0);
+                        let y = value_to_y(state.pos.y as f32, 100.0);
                         dot_at(y, 4.0, egui::Color32::from_rgb(0, 100, 0))
                             .on_hover_text(format!("tick: {}, pos.y: {}", tick, state.pos.y));
                     }
 
                     // pos.z (dark blue)
                     {
-                        let y =
-                            rect.center().y - (state.pos.z as f32 / 100.0) * (rect.height() / 2.0);
+                        let y = value_to_y(state.pos.z as f32, 100.0);
                         dot_at(y, 4.0, egui::Color32::from_rgb(52, 61, 235))
                             .on_hover_text(format!("tick: {}, pos.z: {}", tick, state.pos.z));
                     }
 
                     // vel.y (light green)
                     {
-                        let y =
-                            rect.center().y - (state.vel.y as f32 / 5.0) * (rect.height() / 2.0);
+                        let y = value_to_y(state.vel.y as f32, 5.0);
                         dot_at(y, 4.0, egui::Color32::from_rgb(144, 238, 144))
                             .on_hover_text(format!("tick: {}, vel.y: {}", tick, state.vel.y));
                     }
 
                     // vel.z (light blue)
                     {
-                        let y =
-                            rect.center().y - (state.vel.z as f32 / 5.0) * (rect.height() / 2.0);
+                        let y = value_to_y(state.vel.z as f32, 5.0);
                         dot_at(y, 4.0, egui::Color32::from_rgb(52, 165, 235))
                             .on_hover_text(format!("tick: {}, vel.z: {}", tick, state.vel.z));
                     }
 
-                    let energy_scale = 1.0 / 4.0;
+                    let approx_max_energy = 4.0;
                     // kinetic energy (yellow)
                     {
                         let ke = state.kinetic_energy();
-                        let y =
-                            rect.center().y - (ke as f32 * energy_scale) * (rect.height() / 2.0);
+                        let y = value_to_y(ke as f32, approx_max_energy);
                         dot_at(y, 4.0, egui::Color32::from_rgb(235, 214, 52))
                             .on_hover_text(format!("tick: {}, kinetic energy: {}", tick, ke));
                     }
@@ -251,8 +261,7 @@ fn main() -> eframe::Result {
                     // potential energy (red)
                     {
                         let pe = state.potential_energy();
-                        let y =
-                            rect.center().y - (pe as f32 * energy_scale) * (rect.height() / 2.0);
+                        let y = value_to_y(pe as f32, approx_max_energy);
                         dot_at(y, 4.0, egui::Color32::from_rgb(255, 0, 0))
                             .on_hover_text(format!("tick: {}, potential energy: {}", tick, pe));
                     }
@@ -260,8 +269,7 @@ fn main() -> eframe::Result {
                     // total energy (orange)
                     {
                         let energy = state.total_energy();
-                        let y = rect.center().y
-                            - (energy as f32 * energy_scale) * (rect.height() / 2.0);
+                        let y = value_to_y(energy as f32, approx_max_energy);
                         dot_at(y, 4.0, egui::Color32::from_rgb(235, 143, 52))
                             .on_hover_text(format!("tick: {}, total energy: {}", tick, energy));
                     }
