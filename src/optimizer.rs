@@ -59,7 +59,10 @@ impl State {
             rot,
         };
         entity.travel();
-        entity.into()
+        Self {
+            pos: entity.pos,
+            vel: entity.vel,
+        }
     }
 
     /// kilograms * blocks^2 / ticks^2
@@ -88,14 +91,6 @@ impl State {
         // z vel is only interesting for not steady state
         // self.vel.z
         // self.pos.z
-    }
-}
-impl From<Entity> for State {
-    fn from(entity: Entity) -> Self {
-        Self {
-            pos: entity.pos,
-            vel: entity.vel,
-        }
     }
 }
 
@@ -147,11 +142,6 @@ impl Pitches {
                 .chain((right..ticks).map(|_| -40.0))
                 .collect(),
         )
-    }
-
-    /// +40 then 0 then lerp down.
-    pub fn new_4000lerp(ticks: usize) -> Self {
-        todo!();
     }
 
     /// the state at each tick *after* applying the pitches.

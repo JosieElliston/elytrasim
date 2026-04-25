@@ -23,7 +23,36 @@ fn main() -> eframe::Result {
         // let pitches = Pitches::new_uniform(ticks, 0.0);
         // let pitches = Pitches::new_4040(ticks, 0.5);
         // let pitches = Pitches::new_4040(ticks, 0.65);
-        let pitches = Pitches::new_40zero40(ticks, 0.65, 0.70);
+        // let pitches = Pitches::new_40zero40(ticks, 0.65, 0.70);
+        // close to the optimal curve with four lines
+        let pitches = {
+            // let left_left_cut = 0.05;
+            let left_cut = 0.65;
+            let right_cut = 0.70;
+            let right_right_cut = 0.80;
+            // let left_left = (ticks as f64 * left_left_cut) as usize;
+            let left = (ticks as f64 * left_cut) as usize;
+            let right = (ticks as f64 * right_cut) as usize;
+            let right_right = (ticks as f64 * right_right_cut) as usize;
+            Pitches(
+                // Pitches::new_lerp(left_left, 0.0, 10.0)
+                //     .0
+                //     .iter()
+                //     .chain(Pitches::new_lerp(left - left_left, 10.0, 50.0).0.iter())
+                Pitches::new_lerp(left, 10.0, 50.0)
+                    .0
+                    .iter()
+                    .chain(Pitches::new_uniform(right - left, 0.0).0.iter())
+                    .chain(
+                        Pitches::new_lerp(right_right - right, -85.0, -30.0)
+                            .0
+                            .iter(),
+                    )
+                    .chain(Pitches::new_lerp(ticks - right_right, -30.0, -10.0).0.iter())
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+        };
 
         OptimizerSteadyState::new(pitches)
 
@@ -120,6 +149,18 @@ fn main() -> eframe::Result {
                             }
                         }
                     });
+
+                    if ui.button("double").clicked() {
+                        optimizer = OptimizerSteadyState::new(Pitches(
+                            optimizer
+                                .pitches
+                                .0
+                                .iter()
+                                .chain(optimizer.pitches.0.iter())
+                                .cloned()
+                                .collect(),
+                        ));
+                    }
                 });
 
                 // neighboring optimizers
