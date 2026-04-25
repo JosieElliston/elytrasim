@@ -63,6 +63,7 @@ impl State {
         // self.pos.y / self.pos.z
         // z vel is only interesting for not steady state
         // self.vel.z
+        // self.pos.z
     }
 }
 impl From<Entity> for State {
@@ -165,14 +166,14 @@ impl Pitches {
 }
 
 #[derive(Debug, Clone)]
-pub struct Optimizer {
+pub struct Optimizer<const STEADY_STATE: bool> {
     /// doesn't need to be exactly to maintain the invariant of the type,
     /// but should only diverge when inside the api boundary.
     /// outside the api, it should be exact.
     pub steady_vel: Vec3,
     pub pitches: Pitches,
 }
-impl Optimizer {
+impl<const STEADY_STATE: bool> Optimizer<STEADY_STATE> {
     /// not gradient decent
     fn optimization_step_pitch_not_gradient_decent(&mut self, pitch_i: usize) {
         const EPSILON: f64 = 0.1;
@@ -203,9 +204,8 @@ impl Optimizer {
     }
 
     /// gradient decent
-    fn optimization_step_pitch_gradient_descent(&mut self, pitch_i: usize) {
+    fn optimization_step_pitch_gradient_descent(&mut self, pitch_i: usize, learning_rate: f64) {
         const EPSILON: f64 = 0.1;
-        const LEARNING_RATE: f64 = 100.0;
 
         let cur_pitch = self.pitches.0[pitch_i];
 
@@ -251,23 +251,33 @@ impl Optimizer {
             (None, None) => unreachable!(),
         };
 
-        let delta_pitch = ((LEARNING_RATE * grad) as f32).clamp(-5.0, 5.0);
+        let delta_pitch = ((learning_rate * grad) as f32).clamp(-5.0, 5.0);
         self.pitches.0[pitch_i] = clamped_pitch(cur_pitch + delta_pitch);
     }
 
     /// apply one step of optimization to the pitches.
-    pub fn optimization_step(&mut self) {
+    pub fn optimization_step(&mut self, learning_rate: f64) {
         for i in 0..self.pitches.0.len() {
             // self.optimization_step_pitch_not_gradient_decent(i);
-            self.optimization_step_pitch_gradient_descent(i);
+            self.optimization_step_pitch_gradient_descent(i, learning_rate);
             self.pitches.clamp();
         }
-        self.steady_vel = self.pitches.steady_vel_guessed(self.steady_vel);
+        self.steady_vel = if STEADY_STATE {
+            self.pitches.steady_vel_guessed(self.steady_vel)
+        } else {
+            Vec3::ZERO
+        };
     }
-
-    // fn show(&self, ui: &mut egui::Ui) {}
 }
-impl From<Pitches> for Optimizer {
+impl From<Pitches> for Optimizer<false> {
+    fn from(pitches: Pitches) -> Self {
+        Self {
+            steady_vel: Vec3::ZERO,
+            pitches,
+        }
+    }
+}
+impl From<Pitches> for Optimizer<true> {
     fn from(pitches: Pitches) -> Self {
         let steady_vel = pitches.steady_vel_guessed(Vec3::ZERO);
         Self {

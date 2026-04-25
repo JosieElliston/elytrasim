@@ -16,10 +16,15 @@ fn main() -> eframe::Result {
     // let ticks = 200;
     // let ticks = 250;
     let ticks = 300; // like 20 delta y
-    // let mut optimizer = Optimizer::from(Pitches::new(ticks));
-    let mut optimizer = Optimizer::from(Pitches::new_4040(ticks));
+    // let ticks = 500;
+
+    // let mut optimizer = Optimizer::<false>::from(Pitches::new(ticks));
+    // let mut optimizer = Optimizer::<false>::from(Pitches::new_4040(ticks));
+    // let mut optimizer = Optimizer::<true>::from(Pitches::new(ticks));
+    let mut optimizer = Optimizer::<true>::from(Pitches::new_4040(ticks));
     let mut optimizing = false;
     let mut optimization_steps_per_frame: usize = 10;
+    let mut learning_rate = 500.0;
     eframe::run_ui_native(
         "Elytra Sim",
         eframe::NativeOptions::default(),
@@ -27,7 +32,7 @@ fn main() -> eframe::Result {
             ui.request_repaint();
             egui::Panel::left("side_panel").show_inside(ui, |ui| {
                 if ui.button("optimization step").clicked() {
-                    optimizer.optimization_step();
+                    optimizer.optimization_step(learning_rate);
                 }
                 ui.checkbox(&mut optimizing, "optimizing");
                 ui.label("optimization steps per frame:");
@@ -35,22 +40,21 @@ fn main() -> eframe::Result {
                     &mut optimization_steps_per_frame,
                     0..=100,
                 ));
+                ui.label("learning rate:");
+                ui.add(egui::Slider::new(&mut learning_rate, 10.0..=10000.0).logarithmic(true));
                 if optimizing {
                     for _ in 0..optimization_steps_per_frame {
-                        optimizer.optimization_step();
+                        optimizer.optimization_step(learning_rate);
                     }
                 }
 
-                ui.label(format!(
-                    "after cycle pos.y: {:.06}",
-                    optimizer.pitches.after_cycle(optimizer.steady_vel).pos.y
-                ));
-                ui.label(format!(
-                    "after cycle pos.z: {:.06}",
-                    optimizer.pitches.after_cycle(optimizer.steady_vel).pos.z
-                ));
-                ui.label(format!("steady vel.y: {:.06}", optimizer.steady_vel.y));
-                ui.label(format!("steady vel.z: {:.06}", optimizer.steady_vel.z));
+                let after = optimizer.pitches.after_cycle(optimizer.steady_vel);
+                ui.label(format!("after pos.y: {:.06}", after.pos.y));
+                ui.label(format!("after pos.z: {:.06}", after.pos.z));
+                ui.label(format!("before vel.y: {:.06}", optimizer.steady_vel.y));
+                ui.label(format!("before vel.z: {:.06}", optimizer.steady_vel.z));
+                ui.label(format!("after vel.y: {:.06}", after.vel.y));
+                ui.label(format!("after vel.z: {:.06}", after.vel.z));
 
                 // // debug steady state
                 // {
@@ -79,8 +83,24 @@ fn main() -> eframe::Result {
                         egui::pos2(rect.left(), rect.center().y),
                         egui::pos2(rect.right(), rect.center().y),
                     ],
-                    egui::Stroke::new(1.0, egui::Color32::LIGHT_GRAY),
+                    egui::Stroke::new(1.0, egui::Color32::from_gray(250)),
                 );
+
+                // vertical lines for seconds
+                {
+                    let ticks_per_second = 20;
+                    let seconds = optimizer.pitches.0.len() as f32 / ticks_per_second as f32;
+                    for second in 0..=seconds.ceil() as usize {
+                        let x = rect.left()
+                            + (second as f32 * ticks_per_second as f32
+                                / optimizer.pitches.0.len() as f32)
+                                * rect.width();
+                        ui.painter().line_segment(
+                            [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                            egui::Stroke::new(1.0, egui::Color32::from_gray(150)),
+                        );
+                    }
+                }
 
                 for (tick, (state, pitch)) in optimizer
                     .pitches
