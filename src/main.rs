@@ -3,9 +3,13 @@ mod sim;
 
 use sim::*;
 
-use crate::replay_pitches::REPLAY_PITCHES;
-
 pub const TICK_DURATION: std::time::Duration = std::time::Duration::from_millis(50); // 20 per second
+// const REPLAY_PITCHES: &[f32] = replay_pitches::FORTY_FORTY;
+// const REPLAY_PITCHES: &[f32] = replay_pitches::FORTY_ZERO_FORTY;
+// const REPLAY_PITCHES: &[f32] = replay_pitches::FOUR_LINES_300;
+// const REPLAY_PITCHES: &[f32] = replay_pitches::REPLAY_PITCHES_200;
+const REPLAY_PITCHES: &[f32] = replay_pitches::REPLAY_PITCHES_300;
+// const REPLAY_PITCHES: &[f32] = replay_pitches::REPLAY_PITCHES_400;
 
 fn main() -> eframe::Result {
     #[cfg(false)]
@@ -34,15 +38,25 @@ fn main() -> eframe::Result {
 
     let mut grid_width = 100;
 
-    const Y_VEL_LO: f64 = -3.;
-    const Y_VEL_HI: f64 = 3.;
+    // const Y_VEL_LO: f64 = -3.;
+    // const Y_VEL_HI: f64 = 3.;
+    // const Z_VEL_LO: f64 = 0.;
+    // const Z_VEL_HI: f64 = 4.;
+
+    // TODO: make these uniform
+
+    // const Y_VEL_LO: f64 = -6.;
+    // const Y_VEL_HI: f64 = 6.;
+    // const Z_VEL_LO: f64 = 0.;
+    // const Z_VEL_HI: f64 = 8.;
+
     const Z_VEL_LO: f64 = 0.;
-    const Z_VEL_HI: f64 = 4.;
+    let mut z_vel_hi = 4.;
 
     let mut mag_scale = 0.04;
-    let mut arrow_scale = 0.9;
+    let mut arrow_scale = 0.6;
 
-    let mut draw_arrow_type = DrawArrowType::OptimalPitch;
+    let mut draw_arrow_type = DrawArrowType::OptimalDeltaVel;
 
     let mut rot = Rot::new(0., 0.);
 
@@ -81,6 +95,12 @@ fn main() -> eframe::Result {
                             .clamping(egui::SliderClamping::Never),
                     );
 
+                    ui.label("Max Z Vel");
+                    ui.add(
+                        egui::Slider::new(&mut z_vel_hi, 0.0..=8.0)
+                            .clamping(egui::SliderClamping::Never),
+                    );
+
                     ui.label("Mag Scale");
                     ui.add(
                         egui::Slider::new(&mut mag_scale, 0.01..=100.0)
@@ -100,6 +120,7 @@ fn main() -> eframe::Result {
                         .selected_text(match draw_arrow_type {
                             DrawArrowType::GlobalPitch => "Global Pitch",
                             DrawArrowType::OptimalPitch => "Optimal Pitch",
+                            DrawArrowType::OptimalDeltaVel => "Optimal Delta Vel",
                         })
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
@@ -111,6 +132,11 @@ fn main() -> eframe::Result {
                                 &mut draw_arrow_type,
                                 DrawArrowType::OptimalPitch,
                                 "Optimal Pitch",
+                            );
+                            ui.selectable_value(
+                                &mut draw_arrow_type,
+                                DrawArrowType::OptimalDeltaVel,
+                                "Optimal Delta Vel",
                             );
                         });
                 });
@@ -162,11 +188,14 @@ fn main() -> eframe::Result {
             egui::CentralPanel::default().show_inside(ui, |ui| {
                 let rect = ui.available_rect_before_wrap();
 
+                let y_vel_hi = z_vel_hi * (rect.height() / rect.width()) as f64;
+                let y_vel_lo = -y_vel_hi;
+
                 let grid_to_vel = |(x, y): (usize, usize)| Vec3 {
                     x: 0.,
                     y: lerp_f64(
-                        Y_VEL_LO,
-                        Y_VEL_HI,
+                        y_vel_lo,
+                        y_vel_hi,
                         1.0 - inv_lerp_f64(
                             0.,
                             grid_width as f64 * (rect.height() / rect.width()) as f64,
@@ -175,7 +204,7 @@ fn main() -> eframe::Result {
                     ),
                     z: lerp_f64(
                         Z_VEL_LO,
-                        Z_VEL_HI,
+                        z_vel_hi,
                         inv_lerp_f64(0., grid_width as f64, x as f64),
                     ),
                 };
@@ -186,12 +215,12 @@ fn main() -> eframe::Result {
                         lerp_f64(
                             0.,
                             grid_width as f64,
-                            inv_lerp_f64(Z_VEL_LO, Z_VEL_HI, vel.z),
+                            inv_lerp_f64(Z_VEL_LO, z_vel_hi, vel.z),
                         ) as f32,
                         lerp_f64(
                             0.,
                             grid_width as f64 * (rect.height() / rect.width()) as f64,
-                            1.0 - inv_lerp_f64(Y_VEL_LO, Y_VEL_HI, vel.y),
+                            1.0 - inv_lerp_f64(y_vel_lo, y_vel_hi, vel.y),
                         ) as f32,
                     )
                 };
@@ -254,51 +283,46 @@ fn main() -> eframe::Result {
                         match draw_arrow_type {
                             DrawArrowType::GlobalPitch => {
                                 // delta vel along global pitch (colored by delta energy)
-                                {
-                                    let color = color_of_energy(rot_delta_energy);
-                                    ui.painter().arrow(
-                                        cen,
-                                        egui::vec2(rot_delta_vel.z as f32, -rot_delta_vel.y as f32)
-                                            .normalized()
-                                            * arrow_scale
-                                            * step,
-                                        egui::Stroke::new(0.2 * step, color),
-                                    );
-                                }
+
+                                let color = color_of_energy(rot_delta_energy);
+                                ui.painter().arrow(
+                                    cen,
+                                    egui::vec2(rot_delta_vel.z as f32, -rot_delta_vel.y as f32)
+                                        .normalized()
+                                        * arrow_scale
+                                        * step,
+                                    egui::Stroke::new(0.2 * step, color),
+                                );
                             }
                             DrawArrowType::OptimalPitch => {
+                                // // optimal pitch (pink)
+                                // let color = egui::Color32::from_rgba_unmultiplied(252, 3, 198, 150);
+                                // optimal pitch (fancy color)
+                                let color = color_of_energy(optimal_delta_energy);
+                                ui.painter().arrow(
+                                    cen,
+                                    egui::Vec2::angled(optimal_pitch * std::f32::consts::PI / 180.)
+                                        * arrow_scale
+                                        * step,
+                                    egui::Stroke::new(0.2 * step, color),
+                                );
+                            }
+                            DrawArrowType::OptimalDeltaVel => {
                                 // delta vel along optimal pitch (colored by delta energy)
-                                {
-                                    let color = color_of_energy(
-                                        optimal_new_state.total_energy()
-                                            - init_state.total_energy(),
-                                    );
-                                    ui.painter().arrow(
-                                        cen,
-                                        egui::vec2(
-                                            optimal_delta_vel.z as f32,
-                                            -optimal_delta_vel.y as f32,
-                                        )
-                                        .normalized()
-                                            * arrow_scale
-                                            * step,
-                                        egui::Stroke::new(0.2 * step, color),
-                                    );
-                                }
-
-                                // optimal pitch (pink)
-                                {
-                                    let color =
-                                        egui::Color32::from_rgba_unmultiplied(252, 3, 198, 150);
-                                    ui.painter().arrow(
-                                        cen,
-                                        egui::Vec2::angled(
-                                            optimal_pitch * std::f32::consts::PI / 180.,
-                                        ) * arrow_scale
-                                            * step,
-                                        egui::Stroke::new(0.1 * step, color),
-                                    );
-                                }
+                                let color = color_of_energy(
+                                    optimal_new_state.total_energy() - init_state.total_energy(),
+                                );
+                                ui.painter().arrow(
+                                    cen,
+                                    egui::vec2(
+                                        optimal_delta_vel.z as f32,
+                                        -optimal_delta_vel.y as f32,
+                                    )
+                                    .normalized()
+                                        * arrow_scale
+                                        * step,
+                                    egui::Stroke::new(0.2 * step, color),
+                                );
                             }
                         }
 
@@ -359,6 +383,7 @@ fn main() -> eframe::Result {
                     }
                 }
 
+                // TODO: factor out, show multiple at once
                 // replay path
                 for i in 0..state_index {
                     let state = &replay_states[i];
@@ -487,12 +512,12 @@ pub fn inv_lerp_f32(a: f32, b: f32, v: f32) -> f32 {
 }
 
 pub fn lerp_f64(a: f64, b: f64, t: f64) -> f64 {
-    assert!((0.0..=1.0).contains(&t));
+    // assert!((0.0..=1.0).contains(&t));
     a + (b - a) * t
 }
 
 pub fn inv_lerp_f64(a: f64, b: f64, v: f64) -> f64 {
-    assert!((a..=b).contains(&v));
+    // assert!((a..=b).contains(&v));
     (v - a) / (b - a)
 }
 
@@ -524,4 +549,5 @@ fn get_argmax_over_pitch_of_delta_energy(vel: Vec3) -> f32 {
 enum DrawArrowType {
     GlobalPitch,
     OptimalPitch,
+    OptimalDeltaVel,
 }
