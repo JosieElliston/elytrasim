@@ -1,4 +1,4 @@
-use std::ops::{Add, AddAssign, Mul, MulAssign};
+use std::ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign};
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub struct Vec3 {
@@ -16,6 +16,10 @@ impl Vec3 {
     pub fn horizontal_distance(self) -> f64 {
         (self.x * self.x + self.z * self.z).sqrt()
     }
+
+    pub fn length_sq(self) -> f64 {
+        self.x*self.x + self.y*self.y + self.z*self.z
+    }
 }
 
 impl AddAssign for Vec3 {
@@ -31,6 +35,23 @@ impl Add for Vec3 {
 
     fn add(mut self, rhs: Self) -> Self::Output {
         self += rhs;
+        self
+    }
+}
+
+impl SubAssign for Vec3 {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.x -= rhs.x;
+        self.y -= rhs.y;
+        self.z -= rhs.z;
+    }
+}
+
+impl Sub for Vec3 {
+    type Output = Vec3;
+
+    fn sub(mut self, rhs: Self) -> Self::Output {
+        self -= rhs;
         self
     }
 }

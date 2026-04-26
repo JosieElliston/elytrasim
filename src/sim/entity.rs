@@ -2,7 +2,7 @@ use std::f64::consts::PI;
 
 use super::{GRAVITY, Mth, Rot, Vec3};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Entity {
     pub pos: Vec3,
     pub vel: Vec3,
