@@ -1,7 +1,6 @@
 //! Exact replay data for the interactive floor-profile figure.
 
 use clap::Parser;
-use clap_derive::Parser;
 use elytrasim::opt::{Objective, read_pitches};
 use elytrasim::sim::{FlightMode, State, TrigMode, Vec3, set_flight_mode, set_trig_mode};
 

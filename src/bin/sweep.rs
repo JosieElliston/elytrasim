@@ -48,8 +48,7 @@
 
 use elytrasim::opt::*;
 use elytrasim::sim::*;
-use clap::Parser;
-use clap_derive::{Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use rayon::prelude::*;
 use std::time::Instant;
 
@@ -164,7 +163,7 @@ fn parse_vel(p: &str) -> Result<(f64, f64), String> {
 }
 
 /// One cell's objective.
-#[derive(clap_derive::Args)]
+#[derive(clap::Args)]
 struct Cell {
     #[arg(long, default_value_t = 300)]
     n: usize,
@@ -186,7 +185,7 @@ impl Cell {
 }
 
 /// The polish's settings; the module docs say what each means.
-#[derive(clap_derive::Args)]
+#[derive(clap::Args)]
 struct Polish {
     #[arg(long, default_value_t = PolishOpts::default().tol)]
     tol: f64,
@@ -258,7 +257,7 @@ impl Polish {
 }
 
 /// The full sweep's axes; each defaults to the grid in `Grid::from`.
-#[derive(clap_derive::Args)]
+#[derive(clap::Args)]
 struct GridArgs {
     /// Default 100..=500 by 10.
     #[arg(long, value_delimiter = ',')]

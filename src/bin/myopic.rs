@@ -51,8 +51,7 @@
 //! A schedule file is whitespace-separated pitches in degrees. `<off>` is the tick offset of
 //! the cycle to read, so a 3x-tiled 900-tick flight is read horizon-free at offset 300.
 
-use clap::Parser;
-use clap_derive::{Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use elytrasim::opt::*;
 use elytrasim::sim::*;
 use rayon::prelude::*;

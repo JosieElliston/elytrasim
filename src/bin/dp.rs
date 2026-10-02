@@ -10,7 +10,6 @@ use elytrasim::sim::{
     trig_mode,
 };
 use clap::Parser;
-use clap_derive::Parser;
 use rayon::prelude::*;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};

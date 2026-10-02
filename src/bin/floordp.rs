@@ -41,8 +41,7 @@
 //!
 //! Physics is `floor`'s: `mth_lut` trig and `reference` flight.
 
-use clap::Parser;
-use clap_derive::{Parser, ValueEnum};
+use clap::{Parser, ValueEnum};
 use elytrasim::sim::*;
 use rayon::prelude::*;
 

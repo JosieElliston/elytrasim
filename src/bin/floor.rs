@@ -22,8 +22,7 @@
 
 use elytrasim::opt::*;
 use elytrasim::sim::*;
-use clap::Parser;
-use clap_derive::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use rayon::prelude::*;
 
 #[derive(Parser)]
@@ -109,7 +108,7 @@ enum Cmd {
 }
 
 /// The objective, the floor's price and the polish's settings, shared by the subcommands.
-#[derive(clap_derive::Args)]
+#[derive(clap::Args)]
 struct Common {
     /// Initial v_y, blocks/tick.
     #[arg(long, default_value_t = 0.0)]
@@ -156,7 +155,7 @@ impl Common {
     }
 }
 
-#[derive(clap_derive::Args)]
+#[derive(clap::Args)]
 struct ExitArgs {
     #[command(flatten)]
     c: Common,
