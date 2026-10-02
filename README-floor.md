@@ -710,6 +710,67 @@ Data: `runs/floor/v16-dp` (`<run>.txt` each run's table, `<run>/` its policies a
 traces and maps from that `V`). Cost on one cluster node (4 cores): 1.3 s per
 sweep at 0.8M states, 5.1 s at 3.2M, 10 s at 6.7M.
 
+### 6h. The penalty method on a fixed horizon (`floor penalty`; measured 2026-10-02 18:00 EDT on the cluster)
+
+A different problem from the rest of this file: a fixed horizon `n`, `J = TE(s_n)` (lambda 0),
+from rest, every post-tick state kept at or above the floor. `floor penalty` polishes (coordinate
+ascent, `polish`) under `quad * max(0, -h)^2` per tick, for each `quad` in `--schedule` in turn,
+warm-starting each stage from the last; `--weight 0 --wall 0` turns the bubble and wall off. Every
+run here was seeded with the free `n = 300` optimum at its `mu` (`runs/pencycle/mu`), stretched to
+`n`, and every schedule starts with a `c = 0` stage, which is the free optimum at that `n`.
+Schedules: `g10` (1, 10, .. 1e6), `g100` (1, 1e2, 1e4, 1e6), `g3` (1, 3, 10, .. 1e6), `lo` (1e-2,
+1e-1, .. 1e6), and the abrupt `jump3` / `jump6` (straight to 1e3 / 1e6); against one polish under
+the exact l1 wall (`wall10`, `wall100`) and the default bubble. Up to 400 passes a stage.
+
+| n | y0 | mu | free J (flips) | gradual best (flips) | jump best | wall best | bubble |
+|---|---|---|---|---|---|---|---|
+| 200 | 40 | 0 | 8.57 (14) | 4.53 (2) `lo` | 0.95 (16) | 0.60 (16) | 3.93 (3) |
+| 300 | 40 | 0 | 19.84 (33) | 0.92 (1) `g3` | -9.64 (37) | -10.21 (35) | 0.53 (1) |
+| 300 | 60 | 0 | 19.84 (33) | 15.19 (15) `lo` | 5.82 (35) | 5.55 (34) | 13.55 (31) |
+| 400 | 40 | 0 | 17.40 (39) | -7.75 (0) `g3` | -13.92 (16) | -20.15 (17) | -11.74 (1) |
+| 400 | 60 | 0 | 17.40 (39) | 6.23 (1) `g3` | -5.13 (43) | -4.21 (29) | 4.33 (10) |
+| 300 | 40 | 1e-4 | 19.70 (0) | 0.71 (0) `g3` | -10.43 (1) | -10.97 (0) | 0.48 (0) |
+
+Flips are chatter as in 6b. The last stage of every run is within 1.2e-3 blocks of feasible
+(5e-7 at `c = 1e6`). `y0 = 10` is infeasible at every `n` here and `y0 = 20` at `n = 300` is barely
+feasible (the endurance there is about 320 ticks), so those cells only measure violation; `n = 200,
+y0 = 60` does not bind. `runs/penalty/v1/summarize.py` prints every cell.
+
+* **Raise the price gradually.** Every gradual schedule beats the bubble, the exact wall and the
+  abrupt jumps on every binding cell, by 10-20 blocks of `TE` over the jumps at `n = 300, 400`.
+  Starting at 1e-2 or stepping by 3 is a little better than by 10 or 100 (`g3` or `lo` win each
+  cell). The jumps and the wall land on the same answer as each other: from the infeasible free
+  optimum, a steep price makes the first stage a feasibility problem, and its nearest feasible
+  point keeps the free dive's shape -- a flat glide, then a fast dive onto the floor -- where the
+  gradual schedules move the dive earlier and shallower (`fig/profiles_*.png`).
+* **Mostly, the floor removes the dive chatter by capping the sink rate.** At `mu = 0`, outside
+  `n = 300, y0 = 60`, the gradual answers fall at most 0.33-0.57 blocks/tick and have 0-7 flips;
+  the jumps and the wall fall at 0.63-0.79 and keep 14-43, the free optimum's bang-bang 0-to-85
+  alternation (`fig/chatter_vs_sink.png`). That matches the free cycle's two-tick sink threshold
+  (about -0.6 b/t). No run chatters at the floor: every optimum here touches it at one or two ticks
+  at the dive's bottom and does not ride it, so this problem says nothing about chatter on a
+  constrained arc.
+* **Two exceptions, not explained.** (1) `n = 300, y0 = 60` keeps 15-31 flips under every method:
+  +-3 to +-7 degree zigzags around 35-45 nose-down, 18-25 blocks above the floor, falling at
+  0.42-0.55 blocks/tick when they start. It is not a stalled search: polished again from its own
+  5-tick running mean, it grows back (smaller, to a J 0.04 lower). It sits where 6e found the
+  flight convex in how nose-down is spread (lift dump ~ `sin^2 p`), which would not need the sink
+  threshold. (2) `n = 400, y0 = 40` under `jump3`/`jump6` alternates 85 and 16 degrees at 0.26-0.48
+  blocks/tick, 6-15 blocks up. Neither was isolated.
+* **A large `c` makes the per-pitch score a staircase.** At `c = 1e6` a 0.05-degree pitch change moves
+  the score by thousands of blocks, because the `mth_lut` stairs move the replay's under-floor depth
+  and `c` multiplies it. The certificate's residual then grows with `c` (3e-3, 0.35, 35 at 1e2, 1e4,
+  1e6 on a `lambda = 4, y0 = 20` run stalled 3.3 blocks under the floor), and it measures the stairs,
+  not progress: read feasibility off the replay, as everywhere else here.
+* Cost: `g3` took 69 core-minutes over its 36 cells, `jump6` 16. The first priced stage often hits
+  the 400-pass cap (it starts 40-60 blocks under the floor); later stages stop in 12-30 passes.
+
+Data: `runs/penalty/v1` (`out/<cell>_<schedule>_s<stage>.{pitches,trace}`, `.tsv` per run;
+`make_work.py`, `summarize.py`, `check_claims.py` for the bullets), drawn by `plot.py` into `runs/penalty/fig/penalty.html` (every
+stage of a schedule, and the last stage of every method, per cell) and by `figs.py`.
+`tools/penalty.sbatch` ran it; `examples/penalty_probe.rs` and `examples/smooth_test.rs` are the
+staircase and zigzag checks.
+
 ### 7. Exact `f32` output (a correctness fix, kept)
 
 An exit optimum skims the floor at zero margin. Written to four decimals, one `y0 = 30` schedule
@@ -850,12 +911,14 @@ floor exit   --y0 8 --mode time|dist [--init hold:-13|minipump|pumps:<K>] [--aft
              [--bubble <margin>,<weight> [--shrink <r>] [--anneal <k>]] [--graze off]
 floor endure --y0 8 [--lambda 20 --anneal 3] [--out <file>]
 floor safety --y0 4 --n 37 [--init <spec>]
+floor penalty --y0 40 --n 300 --weight 0 --wall 0 --schedule 0,1,3,10,..,1e6 [--mu 0] [--init <spec>] [--out <prefix>]
 floor solve  --y0 4 --n 36 [--init <spec>]
 floor depth  --file <pitches> [--vy --vz] [--every 50]
 floor laps   --file <pitches> --y0 <h>
 ```
 
-Init specs: `hold:<p>`, `pump:<p_down>,<k>,<p_up>`, `tile:<file>` (a cycle repeated), a file, or
+Init specs: `hold:<p>`, `pump:<p_down>,<k>,<p_up>`, `tile:<file>` (a cycle repeated), `stretch:<file>`
+(resampled to the horizon), a file, or
 (`exit` only) `minipump[:<d>[,<k>]]` and `pumps:<K>[,d=..,lvl=..,pull=..,a=..,a2=..,g=..,end=..]` (6f).
 `--mu` and `--limit` are the usual curvature price and pitch limit, defaulting to `1e-4` and `85`
 as in `runs/atlas`. `runs/floor/` holds the best schedule per cell (`exit_{time,dist}_y<y0>.pitches`, `y0 = 1..32`),

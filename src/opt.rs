@@ -1042,10 +1042,13 @@ pub struct Floor {
     pub weight: f64,
     /// Blocks of `J` charged per tick per block under the floor.
     pub wall: f64,
+    /// Blocks of `J` charged per tick per block^2 under the floor: the quadratic exterior penalty
+    /// of the penalty method, which `floor penalty` raises stage by stage. 0 by default.
+    pub quad: f64,
 }
 
 impl Default for Floor {
-    fn default() -> Self { Floor { depth: f64::INFINITY, margin: 0.5, weight: 1.0, wall: 100.0 } }
+    fn default() -> Self { Floor { depth: f64::INFINITY, margin: 0.5, weight: 1.0, wall: 100.0, quad: 0.0 } }
 }
 
 impl Floor {
@@ -1055,9 +1058,14 @@ impl Floor {
     #[inline]
     pub fn tick(&self, s: &State) -> f64 {
         let h = s.pos.y + self.depth;
-        if h >= self.margin { return 0.0 }
-        let b = (self.margin - h) / self.margin;
-        self.weight * b * b + self.wall * (-h).max(0.0)
+        if h >= self.margin && h >= 0.0 { return 0.0 }
+        let under = (-h).max(0.0);
+        let mut c = self.wall * under + self.quad * under * under;
+        if self.weight != 0.0 && h < self.margin {
+            let b = (self.margin - h) / self.margin;
+            c += self.weight * b * b;
+        }
+        c
     }
 
     /// The whole replay's price, `states[1..]`. 0 when off.

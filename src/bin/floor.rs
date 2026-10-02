@@ -8,11 +8,13 @@
 //!
 //! Subcommands: `probe` (constant-pitch baselines), `solve` (one horizon), `safety` (is a horizon
 //! feasible?), `endure` (the longest feasible horizon), `depth` and `laps` (read a schedule), and
-//! `exit` (first-exit ascent: the interpolated exit time or distance). `floor <cmd> --help` has the
-//! options.
+//! `exit` (first-exit ascent: the interpolated exit time or distance), and `penalty` (one horizon by
+//! the penalty method: a quadratic price under the floor, raised stage by stage). `floor <cmd>
+//! --help` has the options.
 //!
 //! An init spec is `hold:<p>`, `pump:<p_down>,<k>,<p_up>` (p_down for k ticks, then p_up),
-//! `tile:<file>` (a cycle repeated), or a pitch file (last pitch repeated). `exit` also takes
+//! `tile:<file>` (a cycle repeated), `stretch:<file>` (a schedule resampled to the horizon), or
+//! a pitch file (last pitch repeated). `exit` also takes
 //! `minipump[:<d>[,<k>]]`, see `minipump`, and `pumps:<K>[,<key>=<v>..]`, a K-climb
 //! floor-grazing pump flown by events (keys `d lvl pull a a2 g end`; any not given is fitted to
 //! the seed's own exit score), see `Pumps`.
@@ -105,6 +107,29 @@ enum Cmd {
     /// First-exit ascent on the interpolated exit; the cap doubles while the answer survives it.
     #[command(allow_negative_numbers = true)]
     Exit(ExitArgs),
+    /// The penalty method on one horizon: polish under `quad * max(0, -h)^2` per tick, for each
+    /// `quad` in `--schedule` in turn, each stage warm-started from the last. The bubble and wall
+    /// of `Common` still apply; pass `--weight 0 --wall 0` for the pure quadratic penalty.
+    #[command(allow_negative_numbers = true)]
+    Penalty {
+        #[command(flatten)]
+        c: Common,
+        #[arg(long, default_value_t = 300)]
+        n: usize,
+        #[arg(long, default_value = "hold:-13")]
+        init: String,
+        #[arg(long, default_value_t = 200)]
+        passes: usize,
+        /// The penalty coefficients, stage by stage.
+        #[arg(long, value_delimiter = ',', num_args = 1)]
+        schedule: Vec<f64>,
+        /// Shape of the curvature price `--mu` (see `PriceShape`).
+        #[arg(long, default_value = DEFAULT_PENALTY, value_parser = PriceShape::parse)]
+        penalty: PriceShape,
+        /// Stage `k` is written to `<out>_s<k>.pitches`.
+        #[arg(long)]
+        out: Option<String>,
+    },
 }
 
 /// The objective, the floor's price and the polish's settings, shared by the subcommands.
@@ -127,6 +152,9 @@ struct Common {
     weight: f64,
     #[arg(long, default_value_t = Floor::default().wall)]
     wall: f64,
+    /// Quadratic price under the floor, blocks of `J` per tick per block^2.
+    #[arg(long, default_value_t = 0.0)]
+    quad: f64,
     /// Roughness price.
     #[arg(long, default_value_t = 1e-4)]
     mu: f64,
@@ -142,7 +170,7 @@ impl Common {
         Objective { v0: Vec3::new(0.0, self.vy, self.vz), n, lambda: self.lambda }
     }
     fn floor(&self) -> Floor {
-        Floor { depth: self.y0, margin: self.margin, weight: self.weight, wall: self.wall }
+        Floor { depth: self.y0, margin: self.margin, weight: self.weight, wall: self.wall, quad: self.quad }
     }
     fn opts(&self, passes: usize) -> PolishOpts {
         PolishOpts {
@@ -222,6 +250,9 @@ fn init(spec: &str, n: usize) -> Vec<f64> {
         let v: Vec<f64> = r.split(',').map(|x| x.parse().unwrap()).collect();
         let k = v[1] as usize;
         return (0..n).map(|t| if t < k { v[0] } else { v[2] }).collect();
+    }
+    if let Some(f) = spec.strip_prefix("stretch:") {
+        return stretch(&read_pitches(f), n);
     }
     if let Some(f) = spec.strip_prefix("tile:") {
         let c = read_pitches(f);
@@ -1379,6 +1410,43 @@ fn solve(a: &Common, n: usize, spec: &str, passes: usize, out: Option<&str>) {
     }
 }
 
+/// The penalty method's outer loop: one polish per coefficient, warm-started. Every stage is
+/// written with its replay's facts, so the path to the limit can be read off the files.
+fn penalty_cmd(a: &Common, n: usize, spec: &str, passes: usize, schedule: &[f64], shape: PriceShape,
+               out: Option<&str>) {
+    let obj = a.obj(n);
+    let mut p = init(spec, n);
+    const COLS: &str = "stage quad J te_end z_end floor_cost rough_cost clearance sum_under ticks_under passes residual secs";
+    println!("# {COLS}");
+    for (k, &c) in schedule.iter().enumerate() {
+        let mut opts = a.opts(passes);
+        opts.floor.quad = c;
+        opts.rough.shape = shape;
+        let t0 = std::time::Instant::now();
+        let r = polish(&obj, &p, opts);
+        let secs = t0.elapsed().as_secs_f64();
+        p = r.pitches;
+        let st = obj.replay(&p);
+        let f = flown(&obj, &opts.floor, &p);
+        let under: Vec<f64> = st[1..].iter().map(|s| -(s.pos.y + a.y0)).filter(|&u| u > 0.0).collect();
+        let line = format!("{k} {c:e} {:.6} {:.6} {:.4} {:.6e} {:.6e} {:+.6e} {:.6e} {} {} {:.2e} {secs:.1}",
+            r.j, f.te - a.y0, f.z, f.cost, r.rough_cost, f.clearance, under.iter().sum::<f64>(), under.len(),
+            r.passes, r.residual);
+        println!("{line}");
+        if let Some(o) = out {
+            let text = format!(
+                "# floor penalty y0 {} margin {} weight {} wall {} quad {c:e} stage {k} schedule {schedule:?}\n\
+                 # n {n} lambda {} v0 ({}, {}) mu {} shape {shape} limit {}\n# init {spec}\n# {COLS}\n# {line}\n{}\n",
+                a.y0, a.margin, a.weight, a.wall, obj.lambda, obj.v0.y, obj.v0.z, a.mu, a.limit, fmt_pitches(&p));
+            std::fs::write(format!("{o}_s{k}.pitches"), text).unwrap();
+            // The replay, per post-tick state: the clearance and the velocity the pitch acted on.
+            let tr: String = std::iter::once("t pitch h vy vz\n".to_string()).chain(st[1..].iter().enumerate().map(|(t, s)|
+                format!("{} {} {:.9} {:.9} {:.9}\n", t + 1, p[t] as f32, s.pos.y + a.y0, s.vel.y, s.vel.z))).collect();
+            std::fs::write(format!("{o}_s{k}.trace"), tr).unwrap();
+        }
+    }
+}
+
 fn main() {
     set_trig_mode(TrigMode::MthLut);
     set_flight_mode(FlightMode::Reference);
@@ -1388,6 +1456,8 @@ fn main() {
         Cmd::Endure { c, passes, nmax, misses, anneal, shrink, out } =>
             endure(&c, passes, nmax, misses, anneal, shrink, out.as_deref()),
         Cmd::Exit(e) => exit_cmd(&e),
+        Cmd::Penalty { c, n, init, passes, schedule, penalty, out } =>
+            penalty_cmd(&c, n, &init, passes, &schedule, penalty, out.as_deref()),
         Cmd::Depth { c: a, file, every } => {
             // How far a schedule's replay goes below its start, from `--vy/--vz`: the floor
             // clearance a repeated cycle needs.
