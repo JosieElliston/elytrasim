@@ -306,7 +306,7 @@ fn main() {
         }
     }
     let cert_start = Instant::now();
-    let residual = certify(&obj, &p, PolishOpts::default().global_step, jitter);
+    let residual = certify(&obj, &p, CERTIFY_STEP, jitter);
     let cert_seconds = cert_start.elapsed().as_secs_f64();
     // Shift the origin so the final row has the same timing definition as earlier rows.
     report(
@@ -332,7 +332,7 @@ fn main() {
             jitter,
             // The curvature penalties gd applies live in its own flags, not in `Rough`; a
             // profile it writes is a stationary point of `J` plus those, so the header records
-            // no roughness price and `verify` will certify it against plain `J`.
+            // no roughness price and `verify --optimality` will certify it against plain `J`.
             rough: Rough::default(),
             commit: commit_hash().into(),
             pitches: p,

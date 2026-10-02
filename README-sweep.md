@@ -7,8 +7,11 @@ Each file states the utility function and initial conditions it was optimized un
 claim is checkable by re-running the optimizer's own stopping test against the file alone:
 
 ```
-sweep verify runs/corpus/vy+0.0000_vz+0.0000/n0300_lam+0.000000.pitches
+sweep verify --optimality runs/corpus/vy+0.0000_vz+0.0000/n0300_lam+0.000000.pitches
 ```
+
+Plain `sweep verify` is the cheap check: it replays the file and compares the end state with
+the rollout its header records (`dJ`, `dte`, `dy`, `dz`, `v_end`), with no search involved.
 
 How a schedule was reached is deliberately not recorded. Given `(v0, pitches)` the trajectory is
 fully determined, so every derived quantity is recomputable and the optimality claim is
@@ -52,7 +55,7 @@ Things that were tried and measured:
 | initial-velocity jitter, polished hard | no. At 60 forced passes TV is 925, 871, 838, 826, 884 for sigma 0, 0.05, 0.1, 0.2, 0.4 -- flat across an 8x range, while `dz` falls monotonically 345 -> 337. |
 | initial-velocity jitter, stopped early | **yes**, but only while stopped early -- which leaves the answer depending on when the optimizer was interrupted. Superseded. |
 | stopping time | **yes**, and it was what bounded it before the curvature price. Same objection: the answer is wherever the polish was cut off. |
-| l1 curvature price (`Rough::mu`) | **yes, and this is what is used now.** A price rather than a stopping rule, so the polish runs to convergence and the result is a real optimum that `verify` can re-check from the header. `runs/atlas` at `mu = 1e-4`, `runs/antichatter` at `mu = 1e-3`, both with `limit = 85` and `jitter 0`. |
+| l1 curvature price (`Rough::mu`) | **yes, and this is what is used now.** A price rather than a stopping rule, so the polish runs to convergence and the result is a real optimum that `verify --optimality` can re-check from the header. `runs/atlas` at `mu = 1e-4`, `runs/antichatter` at `mu = 1e-3`, both with `limit = 85` and `jitter 0`. |
 
 lag-1 against pass count from the reference cycle at `n = 300`, `sigma = 0`:
 
@@ -105,7 +108,7 @@ sweep polish --n 300 --lambda 0 --vy 0 --vz 0 --jitter 0.10 --draws 8 \
              --passes 8 --tol 0 --lag1-floor 0.2 --flight algebraic \
              --anchor <file> --out <file>
 sweep run    --out <dir> --ns <list> --lams <list> --vys <list> --vzs <list> [--shard i,j]
-sweep verify <file>...
+sweep verify [--optimality] <file>...
 sweep fingerprint
 ```
 

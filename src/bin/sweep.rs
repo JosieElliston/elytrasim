@@ -3,11 +3,13 @@
 //! The product is one file per cell: whitespace-separated pitches in degrees under a `#` header
 //! that states the utility function and initial conditions completely. The point of a profile
 //! is not where it came from -- it is that the pitches are observably a coordinate optimum of
-//! the objective the header names. `sweep verify` re-checks exactly that, from the file alone.
+//! the objective the header names. `sweep verify --optimality` re-checks exactly that, from the
+//! file alone; plain `sweep verify` checks only that the file replays to the rollout it records.
 //!
 //! Subcommands:
 //!   polish  <opts> [--out <file>]   solve one cell and print or write it
-//!   verify  <file>...               re-certify profiles against their own headers
+//!   verify  [--optimality] <file>... replay profiles against their headers' rollout; --optimality
+//!                                   also re-certifies them
 //!   bench   [--n <n>]               seconds per pass and per profile, cold and warm
 //!   pilot   [--out <dir>]           the coarse grid: axis bounds, strides, seed quality
 //!   run     --out <dir> [--shard <i>,..]       the full sweep (shards index --vys x --vzs, vy-major)
@@ -23,7 +25,7 @@
 //!   prices; `l2:2` by default since 2026-09-24, `l1` before -- see `PriceShape`), --mu-tv, --cap, --slew-cap, --limit <deg>
 //!   The l1 curvature price, and the current chatter regularizer. Unlike a pass budget it is a
 //!   *price*, so the polish runs to convergence and the answer is a real optimum that `verify`
-//!   can re-check. `runs/atlas` was built at `--mu 1e-4 --limit 85`, l1.
+//!   `--optimality` can re-check. `runs/atlas` was built at `--mu 1e-4 --limit 85`, l1.
 //!
 //! Steady state: --steady
 //!   Off by default. Re-solves `v0` to the schedule's own fixed point after every pass, so the
@@ -89,10 +91,16 @@ enum Cmd {
         #[arg(long)]
         out: Option<String>,
     },
-    /// Re-certify profiles against their own headers.
+    /// Replay profiles under their own headers' physics and check the recorded rollout (dJ, dte,
+    /// dy, dz, v_end) and the control limits.
     Verify {
         #[arg(required = true)]
         files: Vec<String>,
+        /// Also re-run the certificate: a full global coordinate pass, which must find no
+        /// single-tick gain above 1.5x the header's claimed residual. A search, so its verdict
+        /// depends on how strong the search is; the rollout check does not.
+        #[arg(long)]
+        optimality: bool,
     },
     /// Seconds per pass and per profile, cold and warm.
     #[command(allow_negative_numbers = true)]
@@ -372,7 +380,7 @@ lag1 {:+.3}  TV {:.0}  curv_l1 {:.0}  curv_max {:.0}  {} passes{}  {:.1}s",
     }
 }
 
-fn cmd_verify(files: &[String]) {
+fn cmd_verify(files: &[String], optimality: bool) {
     let mut bad = 0;
     for f in files {
         let text = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{f}: {e}"));
@@ -380,17 +388,54 @@ fn cmd_verify(files: &[String]) {
         // the header is authoritative: replay under the physics it claims, not the shell's
         set_trig_mode(p.trig);
         set_flight_mode(p.flight);
+        let mut fails: Vec<String> = rollout_mismatches(&text, &p);
         let viol = p.rough.violation(&p.pitches);
-        let res = certify_reg(&p.obj, &p.pitches, PolishOpts::default().global_step, p.jitter, p.rough);
-        let claimed = p.residual;
-        let ok = viol == 0.0 && res <= claimed.max(1e-6) * 1.5 + 1e-9;
-        println!("{f}: n {:>4} lambda {:+.4} trig {} flight {} | claimed {:.2e}, found {:.2e}  {}{}",
-                 p.obj.n, p.obj.lambda, p.trig, p.flight, claimed, res, if ok { "ok" } else { "MISMATCH" },
-                 if viol > 0.0 { format!("  (outside its own control limits by {viol:.3} deg)") }
-                 else { String::new() });
-        if !ok { bad += 1 }
+        if viol > 0.0 { fails.push(format!("outside its own control limits by {viol:.3} deg")) }
+        let mut line = format!("{f}: n {:>4} lambda {:+.4} trig {} flight {}", p.obj.n, p.obj.lambda, p.trig, p.flight);
+        if optimality {
+            let res = certify_reg(&p.obj, &p.pitches, CERTIFY_STEP, p.jitter, p.rough);
+            let claimed = p.residual;
+            line += &format!(" | claimed {claimed:.2e}, found {res:.2e}");
+            if !(res <= claimed.max(1e-6) * 1.5 + 1e-9) { fails.push("residual above its claim".into()) }
+        }
+        if fails.is_empty() { println!("{line}  ok") } else { println!("{line}  MISMATCH: {}", fails.join("; ")); bad += 1 }
     }
     if bad > 0 { eprintln!("{bad} of {} profiles failed", files.len()); std::process::exit(1) }
+}
+
+/// Where a replay of `p` disagrees with the rollout its header records: `dJ`, `dte`, `dy`, `dz`
+/// to the 6 decimals they are written with, `v_end` to its 9. A disagreement means the physics,
+/// the file or the format changed since it was written; nothing here depends on a search.
+fn rollout_mismatches(text: &str, p: &Profile) -> Vec<String> {
+    let field = |k: &str| -> Option<Vec<f64>> {
+        text.lines().find_map(|l| l.strip_prefix("# ")?.strip_prefix(k)?.strip_prefix(' ')
+            .map(|v| v.split('#').next().unwrap_or("").split_whitespace().filter_map(|x| x.parse().ok()).collect()))
+    };
+    let o = &p.obj;
+    let st = o.replay(&p.pitches);
+    let (s0, sn) = (&st[0], st.last().unwrap());
+    let replayed: [(&str, Vec<f64>, f64); 5] = [
+        ("dJ", vec![o.j(sn) - o.j(s0)], 1e-6),
+        ("dte", vec![sn.total_energy() - s0.total_energy()], 1e-6),
+        ("dy", vec![sn.pos.y - s0.pos.y], 1e-6),
+        ("dz", vec![sn.pos.z - s0.pos.z], 1e-6),
+        ("v_end", vec![sn.vel.y, sn.vel.z], 1e-9),
+    ];
+    let mut out = vec![];
+    for (k, got, tol) in replayed {
+        match field(k) {
+            None => out.push(format!("no '{k}' recorded")),
+            Some(want) if want.len() != got.len() => out.push(format!("bad '{k}'")),
+            Some(want) => {
+                // The written value is rounded to `tol / 2`; allow the rest of `tol` for the
+                // decimal round trip.
+                if want.iter().zip(&got).any(|(w, g)| (w - g).abs() > tol) {
+                    out.push(format!("{k} recorded {want:?}, replayed {got:?}"))
+                }
+            }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------- cost
@@ -610,7 +655,7 @@ fn write_manifest(dir: &str, g: &Grid, opts: PolishOpts) {
     \"vz0\": [{}]
   }},
   \"cells\": {},
-  \"polish\": {{ \"max_passes\": {}, \"global_every\": {}, \"global_step\": {}, \"local_span\": {}, \"local_step\": {}, \"tol\": {} }},
+  \"polish\": {{ \"max_passes\": {}, \"global_every\": {}, \"global_step\": {}, \"local_span\": {}, \"local_step\": {}, \"pitch_tol\": {}, \"tol\": {} }},
   \"control\": {{ \"mu\": {}, \"mu_tv\": {}, \"cap\": \"{}\", \"slew_cap\": \"{}\", \"limit\": {}, \"flick_at\": {}, \"flick_pitch\": {} }},
   \"jitter\": {{ \"sigma\": {}, \"draws\": {}, \"resample\": {}, \"seed\": {} }},
   \"fingerprint\": \"{:016x}\"
@@ -619,7 +664,7 @@ fn write_manifest(dir: &str, g: &Grid, opts: PolishOpts) {
    g.ns.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "),
    list(&g.lams), list(&g.vys), list(&g.vzs),
    g.ns.len() * g.lams.len() * g.vys.len() * g.vzs.len(),
-   opts.max_passes, opts.global_every, opts.global_step, opts.local_span, opts.local_step, opts.tol,
+   opts.max_passes, opts.global_every, opts.global_step, opts.local_span, opts.local_step, opts.pitch_tol, opts.tol,
         // The price and the margin are part of the utility function; a manifest that omits them
         // describes a different sweep than the one that ran. Each profile carries them too, so
         // nothing was unverifiable -- but the index has to agree with the files.
@@ -684,7 +729,7 @@ fn main() {
     match cli.cmd {
         Cmd::Polish { cell, polish, passes, init, premedian, presmooth, out } =>
             cmd_polish_cell(cell.obj(), polish.opts(passes), init.as_deref(), premedian, presmooth, out.as_deref()),
-        Cmd::Verify { files } => cmd_verify(&files),
+        Cmd::Verify { files, optimality } => cmd_verify(&files, optimality),
         Cmd::Bench { cell, every, passes } => cmd_bench(cell.obj(), every, passes),
         Cmd::Pilot { out, passes, ns, lams, vels, vys, vzs } => cmd_pilot(&out, passes, &ns, &lams, &vels, &vys, &vzs),
         Cmd::Run { grid, polish, passes, out, force, anchor, shard } =>
@@ -696,7 +741,7 @@ fn main() {
             let pr = Profile::parse(&text).unwrap_or_else(|e| panic!("{f}: {e}"));
             set_trig_mode(pr.trig);
             set_flight_mode(pr.flight);
-            let r = residuals_reg(&pr.obj, &pr.pitches, PolishOpts::default().global_step,
+            let r = residuals_reg(&pr.obj, &pr.pitches, CERTIFY_STEP,
                                   pr.jitter, pr.rough);
             let (pos, neg) = (r.iter().filter(|x| x.0 > 1e-9).count(),
                               r.iter().filter(|x| x.0 < -1e-9).count());
@@ -715,7 +760,7 @@ fn main() {
             eprint!("  energy in the first k cosine modes:");
             for (k, e) in &ks { eprint!("  k={k}: {:.0}%", 100.0 * e) }
             eprintln!();
-            match jacobi_step_reg(&pr.obj, &pr.pitches, PolishOpts::default().global_step,
+            match jacobi_step_reg(&pr.obj, &pr.pitches, CERTIFY_STEP,
                                   pr.jitter, pr.rough) {
                 Some((_, alpha, g)) => eprintln!(
                     "  best whole-schedule step: alpha {alpha:.3} worth {g:.4} blocks \

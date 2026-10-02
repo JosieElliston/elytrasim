@@ -56,7 +56,7 @@ class Profile:
         This is a Python transcription of `update_fall_flying_movement` with yaw pinned to
         zero. It uses the platform's trig, so it will not be bit-identical to a profile
         written under `trig = mth_lut`; it is for analysis, not for certification. Use
-        `sweep verify` when the exact optimum matters.
+        `sweep verify --optimality` when the exact optimum matters.
         """
         vy, vz = self.v0
         y = z = 0.0

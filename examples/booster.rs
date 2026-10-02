@@ -50,7 +50,7 @@ fn lim() -> f64 { *LIM_CELL.get_or_init(|| std::env::var("LIM").map_or(89.9, |s|
 
 fn dte(s: &State, n: usize) -> f64 {
     let te = s.total_energy();
-    argmax_in(|p| run_n(s, p, n).total_energy() - te, 0.125, -lim(), lim())
+    argmax_in(|p| run_n(s, p, n).total_energy() - te, -lim(), lim())
 }
 fn law(vz: f64, k: f64) -> f64 { gain_law_pitch(vz, k).max(-lim()) }
 
@@ -76,8 +76,8 @@ fn gain_bvp(s: &State, w: f64, mu_t: (f64, f64), p_init: f64, cap: usize) -> Vec
         }
         let mut worst: f64 = 0.0;
         for k in 0..n {
-            let q = argmax_in(|p| { let f = update_fall_flying_movement(st[k].vel, rot(p));
-                                 mu[k + 1].0 * f.y + mu[k + 1].1 * f.z }, 0.03125, -lim(), lim());
+            let q = argmax_in_tol(|p| { let f = update_fall_flying_movement(st[k].vel, rot(p));
+                                        mu[k + 1].0 * f.y + mu[k + 1].1 * f.z }, -lim(), lim(), 1e-5);
             worst = worst.max((q - ps[k]).abs());
             ps[k] = 0.5 * ps[k] + 0.5 * q;
         }
@@ -102,7 +102,7 @@ fn polish_height(v0: Vec3, init: &[f64], passes: usize) -> (f64, Vec<f64>) {
         let mut st = replay_from(v0, &ps);
         for i in 0..n {
             let (lo, hi) = if pass % 4 == 0 { (-lim(), lim()) } else { ((ps[i] - 6.0).max(-lim()), (ps[i] + 6.0).min(lim())) };
-            let q = argmax_in(|p| tail(&st[i], &ps, i, p), if pass % 4 == 0 { 0.5 } else { 0.05 }, lo, hi);
+            let q = argmax_in(|p| tail(&st[i], &ps, i, p), lo, hi);
             if tail(&st[i], &ps, i, q) > tail(&st[i], &ps, i, ps[i]) { ps[i] = q }
             st[i + 1] = ticked(&st[i], ps[i]);
         }

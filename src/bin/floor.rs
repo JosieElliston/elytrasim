@@ -265,8 +265,6 @@ fn softmin(hs: impl Iterator<Item = f64> + Clone, tau: f64) -> f64 {
 fn safety(obj: &Objective, floor: &Floor, init: &[f64], limit: f64, passes: usize) -> (Vec<f64>, f64) {
     let tau = 0.01;
     let mut p = init.to_vec();
-    let step = 0.25;
-    let cands: Vec<f64> = (0..=((2.0 * limit / step) as i64)).map(|i| -limit + step * i as f64).collect();
     let hard = |p: &[f64]| floor.clearance(&obj.replay(p));
     let mut best = hard(&p);
     for _ in 0..passes {
@@ -282,17 +280,10 @@ fn safety(obj: &Objective, floor: &Floor, init: &[f64], limit: f64, passes: usiz
                 for &q in &tail { s = s.ticked_cached(q); hs.push(s.pos.y + floor.depth) }
                 softmin(hs.iter().copied(), tau)
             };
-            let (mut bp, mut bs) = (p[t], score(p[t]));
-            let (gp, gs) = cands.par_iter().map(|&x| (x, score(x)))
-                .reduce(|| (bp, f64::NEG_INFINITY), |a, b| if b.1 > a.1 { b } else { a });
-            if gs > bs { bp = gp; bs = gs }
-            let (mut a, mut b) = ((bp - step).max(-limit), (bp + step).min(limit));
-            for _ in 0..40 {
-                let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
-                if score(m1) < score(m2) { a = m1 } else { b = m2 }
-            }
-            let r = (0.5 * (a + b)) as f32 as f64;
-            if score(r) > bs { bp = r }
+            let mut bp = p[t];
+            let (r, _) = coordinate_argmax(&score, p[t], -limit, limit, 2.0, PITCH_TOL);
+            let r = r as f32 as f64;
+            if score(r) > score(bp) { bp = r }
             p[t] = bp as f32 as f64;
         }
         let now = hard(&p);
@@ -577,8 +568,8 @@ fn live_end(st: &[State], depth: f64) -> usize {
 }
 
 /// Coordinate ascent on a first-exit score over a fixed cap. The same sweep as `polish` -- a
-/// global scan of every tick's pitch on a 0.25-degree grid, a ternary refine, the `f32` round,
-/// Gauss-Seidel -- but scored on the whole replay rather than on a terminal state, and every pass
+/// `coordinate_argmax` of every tick's pitch on a 2-degree grid, the `f32` round, Gauss-Seidel
+/// -- but scored on the whole replay rather than on a terminal state, and every pass
 /// global. `tick: false` drops that sweep; each of `moves` then gets a sweep of its own, in order,
 /// every pass. The curvature price is quoted in blocks of energy as in `polish`, converted to
 /// score units by `Exit::per_block`. Ticks after the exit are dead: they are not searched, and
@@ -588,9 +579,7 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough:
           passes: usize, tol: f64, bail: bool, tick: bool, moves: &[Move], bub: &mut (f64, f64), shrink: f64)
           -> (Vec<f64>, f64, usize) {
     let pen = Rough { mu: rough.mu * mode.per_block(), ..rough };
-    let step = 0.25;
     let lim = rough.limit;
-    let cands: Vec<f64> = (0..=((2.0 * lim / step) as i64)).map(|i| (-lim + step * i as f64).min(lim)).collect();
     let mut p = init.to_vec();
     let flatten = |p: &mut Vec<f64>| {
         let st = obj.replay(p);
@@ -629,17 +618,11 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough:
                 }
                 utility(&v, depth, mode, ke) - pb * bubble_cost(&v, depth, b) - pen.local(&w, x)
             };
-            let (mut bp, mut bs) = (p[t], score(p[t]));
-            let (gp, gs) = cands.par_iter().map(|&x| (x, score(x)))
-                .reduce(|| (bp, f64::NEG_INFINITY), |a, b| if b.1 > a.1 { b } else { a });
-            if gs > bs { bp = gp; bs = gs }
-            let (mut a, mut b) = ((bp - step).max(-lim), (bp + step).min(lim));
-            for _ in 0..40 {
-                let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
-                if score(m1) < score(m2) { a = m1 } else { b = m2 }
-            }
-            let r = (0.5 * (a + b)).clamp(-lim, lim) as f32 as f64;
-            if score(r) > bs { bp = r }
+            let mut bp = p[t];
+            let (r, _) = coordinate_argmax(&score, p[t], -lim, lim, 2.0, PITCH_TOL);
+            // Round first, then score: the pitch kept is the pitch flown.
+            let r = r.clamp(-lim, lim) as f32 as f64;
+            if score(r) > score(bp) { bp = r }
             p[t] = bp as f32 as f64;
         }
         // Multi-pitch moves (see `Move`), each scored on the whole price since they are not local.
@@ -673,12 +656,8 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough:
                 let s0 = score(0.0);
                 let (mut bd, mut bs) = grid.par_iter().map(|&d| (d, score(d)))
                     .reduce(|| (0.0, f64::NEG_INFINITY), |a, b| if b.1 > a.1 { b } else { a });
-                let (mut a, mut b) = (bd - h, bd + h);
-                for _ in 0..30 {
-                    let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
-                    if score(m1) < score(m2) { a = m1 } else { b = m2 }
-                }
-                let r = 0.5 * (a + b);
+                // To the precision the old 30 ternary steps reached, (2/3)^30 of the 2h bracket.
+                let (r, _) = golden_max(&score, bd - h, bd + h, h * 1e-5);
                 let sr = score(r);
                 if sr > bs { bd = r; bs = sr }
                 if bs > s0 { p = realize(bd).0 }

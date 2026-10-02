@@ -45,28 +45,143 @@ pub fn read_pitches(path: &str) -> Vec<f64> {
         .collect()
 }
 
-/// Coarse sweep for the global argmax, then a ternary refine inside the winning cell.
-/// The objective is not unimodal in pitch, so the sweep has to be global.
-pub fn argmax<F: Fn(f64) -> f64>(f: F, step: f64) -> f64 { argmax_in(f, step, -90.0, 90.0) }
+// The pitch argmax: a coarse global sweep, then a 1-D refinement inside the cells of every
+// sampled peak. `examples/argmax_study.rs` measured it against a 0.01-degree sweep over the
+// reference cycle's states and a velocity grid (libm): no wrong peak on any objective there, at
+// ~110-150 evaluations against the 1562 of the 0.125-degree sweep it replaced.
+//
+// The objectives are not unimodal -- conversion kinks, the forward-to-up branch at pitch 0, ties
+// across +-90 -- so the sweep has to be global. Every sampled peak is refined, not a fixed top
+// few: dTE held 10-48 ticks has up to 4-6 peaks of real prominence (`examples/argmax_modes.rs`),
+// and at a 2-degree step a sample-level peak count of 4 is the most seen there.
+const ARGMAX_STEP: f64 = 2.0;
+// Degrees. Finer is precision the physics does not have: its f32 parts make every energy noisy
+// at ~1e-7 blocks, and where the peak is flat (one-tick dTE: ~6e-5 blocks/deg^2) that alone
+// smears the argmax over ~0.05 degrees; under `mth_lut` the trig staircase makes it ~0.5 at 20
+// ticks. Each factor of 10 here costs only ~5 evaluations per peak.
+const ARGMAX_TOL: f64 = 1e-3;
+
+/// The pitch maximizing `f` over the whole pitch domain.
+pub fn argmax<F: Fn(f64) -> f64>(f: F) -> f64 { argmax_in(f, -90.0, 90.0) }
 
 /// `argmax` over `[lo, hi]` instead of the whole pitch domain. A corpus profile was optimized
 /// under a `|pitch| <= limit` control set, so a rule scored against one has to be held to the
 /// same set: outside it the pitches are not worse, they are unavailable.
-pub fn argmax_in<F: Fn(f64) -> f64>(f: F, step: f64, lo: f64, hi: f64) -> f64 {
-    let (mut bp, mut bs) = (0.0_f64.clamp(lo, hi), f64::NEG_INFINITY);
-    let n = ((hi - lo) / step).round() as i64;
-    for i in 0..=n {
-        let p = (lo + step * i as f64).min(hi);
-        let v = f(p);
-        if v > bs { bs = v; bp = p }
+pub fn argmax_in<F: Fn(f64) -> f64>(f: F, lo: f64, hi: f64) -> f64 { argmax_in_tol(f, lo, hi, ARGMAX_TOL) }
+
+/// `argmax_in` to a tolerance other than `ARGMAX_TOL`, for a caller that iterates on the argmax
+/// and tests convergence below it.
+pub fn argmax_in_tol<F: Fn(f64) -> f64>(f: F, lo: f64, hi: f64, tol: f64) -> f64 {
+    let ps = argmax_grid(lo, hi);
+    let vs: Vec<f64> = ps.iter().map(|&p| f(p)).collect();
+    refine_peaks(&f, &ps, &vs, tol).0
+}
+
+/// `pitch_grid` at the argmax's own step. Exposed so a caller that scores many objectives from
+/// one rollout per pitch (`dj_argmax_all`) samples where `refine_peaks` expects.
+pub fn argmax_grid(lo: f64, hi: f64) -> Vec<f64> { pitch_grid(lo, hi, ARGMAX_STEP) }
+
+/// Both ends of `[lo, hi]` and the multiples of `step` between them. Anchored at 0 rather than at
+/// `lo` because pitch 0 is a corner -- the forward-to-up branch switches on below it -- and the
+/// snap phase's max sits exactly there; a refinement only approaches a corner, so it has to be a
+/// sample.
+pub fn pitch_grid(lo: f64, hi: f64, step: f64) -> Vec<f64> {
+    let (a, b) = ((lo / step).floor() as i64 + 1, (hi / step).ceil() as i64 - 1);
+    let inner = (a..=b).map(|k| k as f64 * step).filter(|&p| p > lo && p < hi);
+    std::iter::once(lo).chain(inner).chain((hi > lo).then_some(hi)).collect()
+}
+
+/// The indices of the local maxima of `vs`, ends included.
+pub fn sampled_peaks(vs: &[f64]) -> Vec<usize> {
+    let n = vs.len();
+    (0..n).filter(|&i| (i == 0 || vs[i] >= vs[i - 1]) && (i + 1 == n || vs[i] >= vs[i + 1])).collect()
+}
+
+/// The argmax of `f` and its value, given its values `vs` at the sorted pitches `ps`: a
+/// refinement inside the two cells around every local maximum of the samples. A sample beats its
+/// refinement when the peak sits on a corner the refinement only approaches.
+pub fn refine_peaks(f: &dyn Fn(f64) -> f64, ps: &[f64], vs: &[f64], tol: f64) -> (f64, f64) {
+    let n = ps.len();
+    let mut best = (ps[0], f64::NEG_INFINITY);
+    for i in sampled_peaks(vs) {
+        if vs[i] > best.1 { best = (ps[i], vs[i]) }
+        let (a, b) = (ps[i.saturating_sub(1)], ps[(i + 1).min(n - 1)]);
+        if b - a > tol {
+            let r = golden_max(f, a, b, tol);
+            if r.1 > best.1 { best = r }
+        }
     }
-    let (mut a, mut b) = ((bp - step).max(lo), (bp + step).min(hi));
-    for _ in 0..60 {
-        let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
-        if f(m1) < f(m2) { a = m1 } else { b = m2 }
+    best
+}
+
+/// One coordinate's move in a coordinate ascent: the best pitch on `[lo, hi]` and its score,
+/// unrounded. Samples every `step` degrees, then `golden_max`es the two cells around every sampled
+/// peak and the cells either side of the incumbent `cur`; under `mth_lut`, then `stair_scan`s
+/// around the best of those.
+///
+/// The incumbent gets its own cells rather than being a sample. Next to a grid point it would
+/// shrink that point's cell to the sliver between them, and under `mth_lut` the objective is rough
+/// enough that the max can sit in the part cut off: `floor exit` lost up to 3e-3 per tick that
+/// way, and ended ~0.01 short on every start height tried. Its own cells are also where a
+/// converging ascent's move almost always is.
+///
+/// The samples and the refinements are independent, so both run in parallel.
+pub fn coordinate_argmax(score: &(dyn Fn(f64) -> f64 + Sync), cur: f64, lo: f64, hi: f64, step: f64,
+                         tol: f64) -> (f64, f64) {
+    let ps = pitch_grid(lo, hi, step);
+    let vs: Vec<f64> = ps.par_iter().map(|&p| score(p)).collect();
+    let n = ps.len();
+    let c = cur.clamp(lo, hi);
+    let cells: Vec<(f64, f64)> = sampled_peaks(&vs).into_iter()
+        .map(|i| (ps[i.saturating_sub(1)], ps[(i + 1).min(n - 1)]))
+        .chain([((c - step).max(lo), c), (c, (c + step).min(hi))])
+        .collect();
+    let best = (0..n).map(|i| (ps[i], vs[i])).max_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
+    let best = cells.into_par_iter()
+        .filter(|&(a, b)| b - a > tol)
+        .map(|(a, b)| golden_max(score, a, b, tol))
+        .reduce(|| best, |a, b| if b.1 > a.1 { b } else { a });
+    if trig_mode() == TrigMode::MthLut { stair_scan(score, best, lo, hi, STAIR_SCAN) } else { best }
+}
+
+/// Degrees either side of `coordinate_argmax`'s answer that `stair_scan` searches. Moves the
+/// polish's certificate still found after golden section were 0.03-0.3 degrees; 0.1 recovered
+/// the old dense sweep's J on `floor exit` at every height tried, and 0.3 bought nothing more on
+/// the polish benchmarks for half again the ticks (2026-10-02, measured at a 2-degree local step).
+const STAIR_SCAN: f64 = 0.1;
+
+/// Every `mth_lut` stair within `w` degrees of `best.0`, one sample each: under the table's trig
+/// the objective is constant in pitch's sin and cos across a stair, so a bracketing search
+/// settles on *a* local stair, and the better one is often a few stairs away.
+fn stair_scan(score: &(dyn Fn(f64) -> f64 + Sync), best: (f64, f64), lo: f64, hi: f64, w: f64) -> (f64, f64) {
+    const STAIR: f64 = 360.0 / 65536.0;
+    let k = (w / STAIR).ceil() as i64;
+    (-k..=k).into_par_iter()
+        .map(|i| (best.0 + i as f64 * STAIR).clamp(lo, hi))
+        .map(|p| (p, score(p)))
+        .reduce(|| best, |a, b| if b.1 > a.1 { b } else { a })
+}
+
+/// Golden section for a max of `f` on `[a, b]`, down to `tol`: the best point it scored, and its
+/// value.
+///
+/// Derivative-free on purpose. A finite-difference Newton ascent from the same peaks landed on
+/// the wrong pitch on 4-60% of states in `examples/argmax_study.rs`: the energy noise swamps a
+/// small difference, and the max often sits on a kink or a corner, where a derivative step
+/// oscillates. Brent's method (parabolic steps with a golden fallback) was tried too and taken
+/// back out (2026-10-02): ~20% faster per polish pass, but its parabola fits the noise on flat
+/// objectives -- a wrong peak and a 0.24-degree miss in the study -- and its trust tests were
+/// never exercised against cells clipped by the control limits. Golden's only assumption is the
+/// bracket.
+pub fn golden_max(f: &dyn Fn(f64) -> f64, mut a: f64, mut b: f64, tol: f64) -> (f64, f64) {
+    const G: f64 = 0.618_033_988_749_894_9;
+    let (mut c, mut d) = (b - G * (b - a), a + G * (b - a));
+    let (mut fc, mut fd) = (f(c), f(d));
+    while b - a > tol {
+        if fc >= fd { (b, d, fd) = (d, c, fc); c = b - G * (b - a); fc = f(c) }
+        else { (a, c, fc) = (c, d, fd); d = a + G * (b - a); fd = f(d) }
     }
-    let p = 0.5 * (a + b);
-    if f(p) > bs { p } else { bp }
+    if fc >= fd { (c, fc) } else { (d, fd) }
 }
 // ---------------------------------------------------------------- the rules
 
@@ -74,7 +189,7 @@ pub fn argmax_in<F: Fn(f64) -> f64>(f: F, step: f64, lo: f64, hi: f64) -> f64 {
 /// n = 1 is elytrasim's `argmax_over_pitch_of_delta_energy`; the optimum wants n ~ 20.
 pub fn bug_dte_n(s: &State, n: usize) -> f64 {
     let te = s.total_energy();
-    argmax(|p| run_n(s, p, n).total_energy() - te, 0.125)
+    argmax(|p| run_n(s, p, n).total_energy() - te)
 }
 
 /// GAIN, at a price on distance. Pitch maximizing the *objective's* change over `n` ticks held
@@ -92,40 +207,29 @@ pub fn bug_dte_n(s: &State, n: usize) -> f64 {
 pub fn bug_dj_n(s: &State, n: usize, w: f64, limit: f64) -> f64 {
     let j = |t: &State| t.total_energy() + w * t.pos.z;
     let j0 = j(s);
-    argmax_in(|p| j(&run_n(s, p, n)) - j0, 0.125, -limit, limit)
+    argmax_in(|p| j(&run_n(s, p, n)) - j0, -limit, limit)
 }
 
 /// `bug_dj_n` for every lookahead `1..=nmax` at once.
 ///
 /// Holding a pitch for `n` ticks is a prefix of holding it for `n + 1`, so one rollout per grid
-/// pitch scores every horizon; only the refinement inside the winning cell is per-horizon. That
-/// is the difference between minutes and hours over a corpus.
+/// pitch scores every horizon; only the refinement is per-horizon.
 pub fn dj_argmax_all(s: &State, nmax: usize, w: f64, limit: f64) -> Vec<f64> {
-    let step = 0.125;
     let j = |t: &State| t.total_energy() + w * t.pos.z;
     let j0 = j(s);
-    let mut best = vec![(f64::NEG_INFINITY, 0.0_f64); nmax + 1];
-    let steps = (2.0 * limit / step).round() as i64;
-    for i in 0..=steps {
-        let p = (-limit + step * i as f64).min(limit);
+    let ps = argmax_grid(-limit, limit);
+    // vs[n - 1][i]: the score of holding ps[i] for n ticks.
+    let mut vs = vec![vec![0.0; ps.len()]; nmax];
+    for (i, &p) in ps.iter().enumerate() {
         let trig = PitchTrig::new(p as f32);
         let mut t = s.clone();
-        for n in 1..=nmax {
+        for row in vs.iter_mut() {
             t = t.ticked_cached(trig);
-            let v = j(&t) - j0;
-            if v > best[n].0 { best[n] = (v, p) }
+            row[i] = j(&t) - j0;
         }
     }
-    (1..=nmax).map(|n| {
-        let (bs, bp) = best[n];
-        let f = |p: f64| j(&run_n(s, p, n)) - j0;
-        let (mut a, mut b) = ((bp - step).max(-limit), (bp + step).min(limit));
-        for _ in 0..40 {
-            let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
-            if f(m1) < f(m2) { a = m1 } else { b = m2 }
-        }
-        let p = 0.5 * (a + b);
-        if f(p) > bs { p } else { bp }
+    vs.iter().enumerate().map(|(k, row)| {
+        refine_peaks(&|p| j(&run_n(s, p, k + 1)) - j0, &ps, row, ARGMAX_TOL).0
     }).collect()
 }
 
@@ -990,6 +1094,15 @@ fn eval_floored(obj: &Objective, pitches: &[f64], dv: &[Vec3], floor: &Floor) ->
 
 // ---------------------------------------------------------------- the optimizer
 
+/// Degrees: the sample spacing of `certify`'s global pass. Finer than the polish's own global
+/// passes on purpose: the certificate is the profile's claim, re-derived by `verify
+/// --optimality` from the file alone, and costs one pass where the polish costs a hundred.
+pub const CERTIFY_STEP: f64 = 0.25;
+
+/// Degrees: the polish's and the certificate's per-tick pitch tolerance. A pitch is flown as an
+/// `f32`, ~4e-6 degrees apart at 50.
+pub const PITCH_TOL: f64 = 1e-5;
+
 /// How hard to polish. The defaults are `cmd_polish`'s, which is the schedule every number in
 /// `README-myopic.md` was produced with.
 #[derive(Clone, Copy, Debug)]
@@ -998,10 +1111,28 @@ pub struct PolishOpts {
     /// Sweep the whole pitch range every this many passes; otherwise search near the current
     /// pitch. The global sweep is what handles the objective not being unimodal in pitch.
     pub global_every: usize,
+    /// Degrees between the samples of a global pass, and of a local one. Each sampled peak is
+    /// then refined to `pitch_tol`, so these set how narrow a peak can be and still be found, not
+    /// the precision. The global step is coarse because a global pass is looking for another
+    /// basin; the local one is finer because the moves it has to find are smaller.
+    ///
+    /// Under `mth_lut` the per-tick objective is a ragged staircase of 0.0055-degree stairs, and
+    /// the better stair is often 0.03-0.3 degrees from where golden section settles; with only
+    /// samples and golden section the polish stalled at a residual of 1e-5 to 5e-5 under every
+    /// control constraint tried. `coordinate_argmax`'s `stair_scan` is what finds those stairs,
+    /// not the sample spacing.
+    ///
+    /// Cost is counted in simulated ticks, because sweeps run `RAYON_NUM_THREADS=1` and
+    /// parallelize over cells. Against the old 0.25/0.05 sweep plus 70 ternary steps (2026-10-02,
+    /// `mth_lut`, n = 300): 2/0.5 with the stair scan spends 1.7-4.2x fewer ticks, and its J was
+    /// better or equal on 11 of 12 benchmark cells and on 3 of 5 atlas-setting cells (mean
+    /// +3.9e-4 blocks there). A 0.05 local step without the scan cost twice the ticks for a
+    /// slightly worse J; narrowing the local span to 4 degrees lost 3e-2 on the unconstrained cell.
     pub global_step: f64,
     pub local_span: f64,
     pub local_step: f64,
-    pub ternary_iters: usize,
+    /// Degrees: how finely each tick's best pitch is refined. See `PITCH_TOL`.
+    pub pitch_tol: f64,
     /// Stop once the schedule has gained less than this many blocks of `J` over the last
     /// `stall_window` passes. Default 0.1: past that the optimizer is tuning below the
     /// precision anyone could fly, and the extra precision is the part most likely to be
@@ -1069,8 +1200,8 @@ pub struct PolishOpts {
 impl Default for PolishOpts {
     fn default() -> Self {
         PolishOpts {
-            max_passes: 200, global_every: 4, global_step: 0.25,
-            local_span: 8.0, local_step: 0.05, ternary_iters: 70, tol: 0.1, block: 0, stall_window: 12,
+            max_passes: 200, global_every: 4, global_step: 2.0,
+            local_span: 8.0, local_step: 0.5, pitch_tol: PITCH_TOL, tol: 0.1, block: 0, stall_window: 12,
             // Off by default. It reads well but interacts badly with continuation: a warm
             // start arrives with a seam where `stretch` joined, that reads as chatter, and the
             // guard then stops the polish that would have repaired it -- freezing a chain of
@@ -1134,7 +1265,7 @@ fn f32_inside(x: f64, lo: f64, hi: f64) -> Option<f64> {
 
 /// The least `f32` strictly greater than `x`. The pre-flick half of the admissible set is open
 /// in real arithmetic, but schedules are flown and written as `f32`; turning it into this closed
-/// endpoint lets every later clamp and ternary refinement preserve the strict condition.
+/// endpoint lets every later clamp and refinement preserve the strict condition.
 fn f32_strictly_above(x: f64) -> Option<f64> {
     if !x.is_finite() || x >= f32::MAX as f64 { return None }
     let mut v = x as f32;
@@ -1146,16 +1277,17 @@ fn f32_strictly_above(x: f64) -> Option<f64> {
     Some(v as f64)
 }
 
-/// Best pitch for tick `t`, holding every other tick fixed: a global sweep, then a ternary
-/// refine inside the winning cell, scored on the exact tail. Returns `(pitch, J)` with the
-/// pitch already rounded to `f32`, because the sim casts pitch to `f32` anyway -- so the value
-/// returned is the one that will actually be flown, and its score is the score of flying it.
+/// Best pitch for tick `t`, holding every other tick fixed, scored on the exact tail: a
+/// `coordinate_argmax` over `[lo, hi]`, sampled every `step` degrees and refined to `tol`.
+/// Returns `(pitch, J, J at cur)` with the pitch already rounded to `f32`, because the sim casts
+/// pitch to `f32` anyway -- so the value returned is the one that will actually be flown, and its
+/// score is the score of flying it.
 ///
 /// `pen` is the roughness price of putting a given pitch here -- the terms of `Rough::cost`
 /// that this tick takes part in. It is subtracted from the score, so the coordinate search
 /// optimizes the same regularized objective the polish reports, not `J` alone.
 fn best_pitch_at(obj: &Objective, s: &[State], tail: &[PitchTrig],
-                 cur: f64, lo: f64, hi: f64, step: f64, ternary_iters: usize,
+                 cur: f64, lo: f64, hi: f64, step: f64, tol: f64,
                  pen: &(dyn Fn(f64) -> f64 + Sync), floor: &Floor) -> (f64, f64, f64) {
     // One prefix state per jitter draw. The draws differ only in where they started, so the
     // tail is the exact schedule flown from each of them -- this is E[J | v0 + dv] under common
@@ -1177,14 +1309,6 @@ fn best_pitch_at(obj: &Objective, s: &[State], tail: &[PitchTrig],
             }
         }).sum::<f64>() / s.len() as f64 - pen(p)
     };
-    let steps = ((hi - lo) / step).round() as i64;
-    // `steps` is a rounded count, so `lo + step*steps` overshoots `hi` whenever the interval is
-    // not an exact multiple of the step -- about half of them, by up to half a step. That is
-    // 0.125 degrees at the global step, and it would let the search return a pitch outside the
-    // admissible set the caller just computed. Clamp the sample, not just the ternary bracket.
-    let at = |i: i64| f32_inside(lo + step * i as f64, lo, hi);
-    // The tail replays are independent, so the sweep is exactly parallel -- no approximation,
-    // just the same evaluations on more cores.
     let j_cur = score(cur);
     // The incumbent has to be *inside* the interval, or a warm start that arrives out of bounds
     // is never brought in: it would simply out-score every candidate and be kept. `j_cur` still
@@ -1192,27 +1316,17 @@ fn best_pitch_at(obj: &Objective, s: &[State], tail: &[PitchTrig],
     // against.
     // No representable pitch inside the interval: leave the tick alone rather than step out of it.
     let Some(start) = f32_inside(cur, lo, hi) else { return (cur, j_cur, j_cur) };
-    let (mut bp, mut bs) = (start, if start == cur { j_cur } else { score(start) });
-    let (gp, gs) = (0..steps + 1)
-        .into_par_iter()
-        .filter_map(|i| at(i).map(|p| (p, score(p))))
-        .reduce(|| (start, f64::NEG_INFINITY), |a, b| if b.1 > a.1 { b } else { a });
-    if gs > bs { bp = gp; bs = gs }
-
-    // Bracket inside [lo, hi]: the refine must not walk back out of the admissible set.
-    let (mut a, mut b) = ((bp - step).max(lo), (bp + step).min(hi));
-    for _ in 0..ternary_iters {
-        let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
-        if score(m1) < score(m2) { a = m1 } else { b = m2 }
-    }
+    let j_start = if start == cur { j_cur } else { score(start) };
+    let (p, _) = coordinate_argmax(&score, start, lo, hi, step, tol);
     // Round first, then score: the schedule that gets written must be the schedule that was
-    // measured, or a cell can be certified on a pitch it does not contain.
-    let refined = f32_inside(0.5 * (a + b), lo, hi);
-    let (p, j) = match refined {
-        Some(r) => { let rs = score(r); if rs > bs { (r, rs) } else { (bp, bs) } }
-        None => (bp, bs),
-    };
-    (p, j, j_cur)
+    // measured, or a cell can be certified on a pitch it does not contain. Rounded *into* the
+    // interval, so the search never returns a pitch outside the admissible set the caller just
+    // computed.
+    let refined = f32_inside(p, lo, hi).map(|r| (r, score(r)));
+    // Strictly better only, starting from the incumbent: a tie never moves the tick.
+    let (mut bp, mut bs) = (start, j_start);
+    if let Some((r, v)) = refined { if v > bs { (bp, bs) = (r, v) } }
+    (bp, bs, j_cur)
 }
 
 /// What a full global pass would do at every tick, without doing it: the best pitch, the move
@@ -1243,7 +1357,7 @@ pub fn residuals_floored(obj: &Objective, pitches: &[f64], step: f64, jit: Jitte
             let pen = |x: f64| rough.local(&w, x);
             let (lo, hi) = rough.feasible(&w, t, -90.0, 90.0).unwrap_or((pitches[t], pitches[t]));
             let (p, j, j_cur) = best_pitch_at(obj, &row, &trig[t + 1..], pitches[t],
-                                              lo, hi, step, 70, &pen, &floor);
+                                              lo, hi, step, PITCH_TOL, &pen, &floor);
             (p - pitches[t], j - j_cur)
         })
         .collect()
@@ -1573,7 +1687,7 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
                 continue
             };
             let (np, j, j_cur) = best_pitch_at(&obj, &row, &trig[t + 1..], cur,
-                                               lo, hi, step, opts.ternary_iters, &pen, &floor);
+                                               lo, hi, step, opts.pitch_tol, &pen, &floor);
             if global { worst_tick = worst_tick.max(j - j_cur) }
             pitches[t] = np;
             trig[t] = PitchTrig::new(np as f32);
@@ -1630,7 +1744,7 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
     }
 
     let j = obj.eval(&pitches);
-    let residual = certify_floored(&obj, &pitches, opts.global_step, opts.jitter, opts.rough, floor);
+    let residual = certify_floored(&obj, &pitches, CERTIFY_STEP, opts.jitter, opts.rough, floor);
     let l1 = lag1(&pitches);
     let rough_cost = opts.rough.cost(&pitches);
     Polished { pitches, j, passes, last_gain, residual, lag1: l1, stopped_degenerate, rough_cost,
@@ -1654,11 +1768,11 @@ pub struct Profile {
     pub flight: FlightMode,
     /// The jitter the schedule was optimized against. Part of the utility function, so a
     /// profile optimized at sigma = 1 is a different object from one optimized at sigma = 0,
-    /// and `verify` re-certifies against whatever the header says.
+    /// and `verify --optimality` re-certifies against whatever the header says.
     pub jitter: Jitter,
     /// The roughness price the schedule was optimized under. Part of the utility function in
     /// exactly the way `jitter` is: a profile written at `mu = 0.002` is a coordinate optimum
-    /// of a different objective than one written at `mu = 0`, and `verify` has to know which.
+    /// of a different objective than one written at `mu = 0`, and `verify --optimality` has to know which.
     pub rough: Rough,
     pub commit: String,
     pub pitches: Vec<f64>,
@@ -1729,7 +1843,7 @@ corpus sweeps one cycle, so more than one is degenerate", sh.cycles));
         w(&format!("# curv_max    {:.1}                 # peak |second difference|, deg/tick^2",
                    curvature_max(&self.pitches)));
         w(&format!("# certified   full global pass at {:.2}deg, exact tail eval, improves J by {:.2e} ({} passes)",
-                   PolishOpts::default().global_step, self.residual, self.passes));
+                   CERTIFY_STEP, self.residual, self.passes));
         for p in &self.pitches { w(&format!("{p}")) }
         out
     }

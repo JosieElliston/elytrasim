@@ -45,9 +45,13 @@ Everything below is at the cell every chatter number in `README-sweep.md` was me
 
 `examples/gd.rs` is finite-difference gradient ascent with Adam, sharing the objective and the
 jitter with `polish`. A gradient pass costs two tail replays per tick; a coordinate-ascent pass
-costs a few hundred (721 sweep points plus 70 ternary steps on a global pass, 321 plus 70 on a
-local one). Measured on this cell: 1.8 ms against 192 ms per pass, a factor of 108, so 20000
-gradient passes cost 36 seconds against 20 seconds for 104 coordinate-ascent passes.
+cost a few hundred when this was measured (721 sweep points plus 70 ternary steps on a global
+pass, 321 plus 70 on a local one). Measured on this cell: 1.8 ms against 192 ms per pass, a
+factor of 108, so 20000 gradient passes cost 36 seconds against 20 seconds for 104
+coordinate-ascent passes. Since 2026-10-02 the per-tick search is `opt::coordinate_argmax`
+(2-degree samples on global passes, 0.5 on local ones, golden-section refinement, and a scan of
+the `mth_lut` stairs around the answer), which spends 1.7-4.2x fewer simulated ticks per polish
+at the same or better J. That narrows the factor but does not change the comparison below.
 
 | | J | TV | lag1 | max abs d2p | residual |
 |---|---|---|---|---|---|
@@ -138,7 +142,7 @@ optimum leans on pitch +90 is leaning on the sign of a rounding error that vanil
 ## The fix: say what the control can do, then converge
 
 Two additions to `PolishOpts`, both in `Rough` in `src/opt.rs`, both recorded in the profile
-header so `sweep verify` re-certifies against the same objective the writer used:
+header so `sweep verify --optimality` re-certifies against the same objective the writer used:
 
 ```
 --mu <blocks per deg/tick^2>   price on sum |p[t+1] - 2p[t] + p[t-1]|
@@ -558,8 +562,8 @@ What it cost, split by regime:
 
 So inside the regime the corpus is *about*, the rebuild is **free** -- very slightly positive on
 the median, better in 168 cells and worse in 121 -- while cutting hand movement twenty-fold and
-eliminating gate parking entirely. All 363 re-certify from their own headers: `sweep verify`
-reports 363 ok, no mismatches and no bad headers, worst claimed residual 1.96e-3. The `n >= 550` band is the tiling degeneracy `README-sweep.md`
+eliminating gate parking entirely. All 363 re-certify from their own headers: `sweep verify
+--optimality` (at the time plain `sweep verify`, with the search before 2026-10-02) reports 363 ok, no mismatches and no bad headers, worst claimed residual 1.96e-3. The `n >= 550` band is the tiling degeneracy `README-sweep.md`
 already names: those old cells climb twice as far because they fly the cycle twice, and the
 rebuilt ones stay in the single-cycle family. `fig/10_shard.png` draws all of it; the third row is
 the one to look at, because the rebuilt panel is empty.

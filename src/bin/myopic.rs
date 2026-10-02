@@ -340,8 +340,8 @@ fn cmd_score(path: &str, off: usize, lo: usize, hi: usize) {
     }
     row("hold gamma".into(), &|s| bug_gamma_to(s, gamma(s.vel)));
     row("gamma -> 16.577".into(), &|s| bug_gamma_to(s, 16.577));
-    row("max next speed".into(), &|s| argmax(|p| ticked(s, p).vel.length(), 0.125));
-    row("min next |v_y|".into(), &|s| argmax(|p| -ticked(s, p).vel.y.abs(), 0.125));
+    row("max next speed".into(), &|s| argmax(|p| ticked(s, p).vel.length()));
+    row("min next |v_y|".into(), &|s| argmax(|p| -ticked(s, p).vel.y.abs()));
     row("hold gamma, floored".into(), &bug_dive_floor);
 }
 
@@ -608,7 +608,7 @@ fn dh(vy: f64, vz: f64, p: f64) -> f64 {
     ticked(&State { pos: Vec3::ZERO, vel: Vec3::new(0.0, vy, vz) }, p).vel.z - vz
 }
 fn best_dh(vy: f64, vz: f64) -> (f64, f64) {
-    let p = argmax(|p| dh(vy, vz, p), 0.05);
+    let p = argmax(|p| dh(vy, vz, p));
     (dh(vy, vz, p), p)
 }
 
@@ -921,7 +921,7 @@ fn cmd_prices(path: &str, tag: &str) {
         let (ep, ee) = best_eq(ly, lz);
         // not circular: the tangency fixes lambda locally, so recovering p_t as the *global*
         // argmax of lambda.f is a real check that the extracted lambda is the optimum's own
-        let chk = argmax(|q| { let f = update_fall_flying_movement(st[t].vel, rot(q)); ly * f.y + lz * f.z }, 0.125);
+        let chk = argmax(|q| { let f = update_fall_flying_movement(st[t].vel, rot(q)); ly * f.y + lz * f.z });
         println!("{:>5} {:>8.3} {:>8.3} {ly:>8.4} {lz:>8.4} {:>9.4} {ep:>10.3} {:>9.4} {:>9.5} {:>9.3}",
                  t - a0, ps[t], gamma(st[t].vel), lz / ly, gamma(ee), ee.z, chk - ps[t]);
     }
@@ -1014,7 +1014,7 @@ fn cmd_adjoint(path: &str, w: Option<f64>, dump: bool) {
     let mut err: Vec<f64> = vec![];
     for t in 0..n {
         let (my, mz) = mu[t + 1];
-        let q = argmax(|p| { let f = update_fall_flying_movement(st[t].vel, rot(p)); my * f.y + mz * f.z }, 0.125);
+        let q = argmax(|p| { let f = update_fall_flying_movement(st[t].vel, rot(p)); my * f.y + mz * f.z });
         err.push(q - ps[t]);
     }
     let rms = |a: &[f64]| (a.iter().map(|x| x * x).sum::<f64>() / a.len() as f64).sqrt();
@@ -1363,8 +1363,9 @@ pub fn gain_bvp(s: &State, w: f64, mu_t: (f64, f64), p_init: f64, cap: usize) ->
         }
         let mut worst: f64 = 0.0;
         for k in 0..n {
-            let q = argmax(|p| { let f = update_fall_flying_movement(st[k].vel, rot(p));
-                                 mu[k + 1].0 * f.y + mu[k + 1].1 * f.z }, 0.03125);
+            // Finer than the default: the loop below stops on a 1e-4 move.
+            let q = argmax_in_tol(|p| { let f = update_fall_flying_movement(st[k].vel, rot(p));
+                                        mu[k + 1].0 * f.y + mu[k + 1].1 * f.z }, -90.0, 90.0, 1e-5);
             worst = worst.max((q - ps[k]).abs());
             ps[k] = 0.5 * ps[k] + 0.5 * q;      // damped; the undamped sweep oscillates
         }

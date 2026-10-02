@@ -19,7 +19,8 @@ Two decisions up front, both of which are load-bearing.
 **Diversity goes in the seed, never in the objective.** The obvious way to collect different
 answers is a novelty term that pushes each solve away from the ones already found. That destroys
 the product. A profile's entire claim is that its pitches are a coordinate optimum of the
-objective named in its own header, and `sweep verify` re-checks exactly that from the file alone.
+objective named in its own header, and `sweep verify --optimality` re-checks exactly that from
+the file alone.
 Under a repulsion term every file would be an optimum of something that depends on which other
 files happened to exist when it ran -- not reproducible, not checkable, and not stateable in a
 header. A seed, by contrast, is where a *strategy* is stated; polishing it under the unchanged
@@ -471,7 +472,8 @@ the ten of them and three things show up that the scatter cannot:
   | `v00_n600_lam0` | 3.572 | **41.374** | 1 |
 
   Both headline profiles were replay-verified from their own headers rather than trusted:
-  29.235446995918 and 41.373970520579, `sweep verify` ok at 9.29e-6 and 1.10e-5.
+  29.235446995918 and 41.373970520579, `sweep verify --optimality` ok at 9.29e-6 and 1.10e-5
+  (at the time plain `sweep verify`, with the search before 2026-10-02).
 
   Over these three points the best-in-cell value rises 19.71 / 29.24 / 41.37 while the best
   single cycle falls 19.71 / 14.22 / 3.57. Three horizons do not establish a scaling law, and I
