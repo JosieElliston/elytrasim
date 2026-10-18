@@ -1,60 +1,98 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>pitch schedule explorer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Elytra pitch explorer</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: controls in a scrolling left rail; the velocity plane and the pitch trace fill the rest of one screen. */
+  :root {
+    color-scheme: dark;
+    --bg: #14171a; --panel: #1b1f24; --line: #4a525c; --rule: #2b3138;
+    --fg: #e6e9ed; --muted: #b9c0c9; --bad: #f85149;
+    --ui: "Atkinson Hyperlegible", system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  html, body { height: 100%; margin: 0; background: var(--bg); }
+  #pitch-explorer { box-sizing: border-box; color: var(--fg); background: var(--bg); font: 14px var(--ui); padding-block: 14px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); height: 100%; overflow: hidden; display: grid; grid-template-columns: 350px minmax(0, 1fr); gap: 18px; }
+  #pitch-explorer * { box-sizing: border-box; }
+  #pitch-explorer [hidden] { display: none !important; }
+  #pitch-explorer h1 { font-size: 20px; font-weight: 700; margin: 0 0 4px; text-wrap: balance; }
+  #pitch-explorer .sub { color: var(--muted); margin: 0 0 6px; font-size: 13px; line-height: 1.45; }
+  #pitch-explorer .left { min-width: 0; min-height: 0; overflow-y: auto; padding-right: 4px; display: flex; flex-direction: column; gap: 10px; }
+  #pitch-explorer .controls { display: grid; grid-template-columns: 70px minmax(60px, 1fr) 72px; gap: 8px; align-items: center; font-size: 13px; }
+  #pitch-explorer input[type="range"] { width: 100%; accent-color: var(--c, #79c0ff); }
+  #pitch-explorer input[type="text"] { width: 100%; background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; font: 12px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+  #pitch-explorer input[type="text"].bad { border-color: var(--bad); }
+  #pitch-explorer button { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 9px; font: 13px var(--ui); cursor: pointer; }
+  #pitch-explorer button:hover { border-color: var(--muted); }
+  #pitch-explorer :focus-visible { outline: 2px solid #79c0ff; outline-offset: 1px; }
+  #pitch-explorer .segs { display: flex; flex-direction: column; gap: 8px; }
+  #pitch-explorer .seg { border-left: 3px solid var(--c); padding: 6px 0 6px 10px; display: flex; flex-direction: column; gap: 6px; }
+  #pitch-explorer .seg-head { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  #pitch-explorer .seg-head label { margin-right: 4px; }
+  #pitch-explorer button:disabled { opacity: .35; cursor: default; }
+  #pitch-explorer .seg-head .name { color: var(--c); font-weight: 700; flex: 1; }
+  #pitch-explorer .seg-head label { color: var(--muted); display: flex; align-items: center; gap: 4px; }
+  #pitch-explorer .seg-head button { padding: 0 7px; line-height: 20px; }
+  #pitch-explorer .caption { color: var(--muted); font-size: 12px; margin: 0; line-height: 1.45; }
+  #pitch-explorer .code-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+  #pitch-explorer .code-row input[type="text"] { text-align: left; }
+  #pitch-explorer .right { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+  #pitch-explorer .box { position: relative; min-height: 0; }
+  #pitch-explorer .box.field { flex: 1 1 0; }
+  #pitch-explorer .box.pitch { flex: 0 0 28%; }
+  #pitch-explorer canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: var(--panel); border: 1px solid var(--line); }
+  #pitch-explorer #pe-field { cursor: move; touch-action: none; }
+  #pitch-explorer #pe-pitch { touch-action: none; }
+  #pitch-explorer .bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  #pitch-explorer .readout { flex: 1; min-width: 0; font: 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--fg); white-space: pre-wrap; }
+  #pitch-explorer .readout.idle { color: var(--muted); font-family: var(--ui); }
+  @media (max-width: 860px) {
+    html, body { height: auto; }
+    #pitch-explorer { height: auto; overflow: visible; grid-template-columns: minmax(0, 1fr); }
+    #pitch-explorer .left { overflow: visible; padding-right: 0; }
+    #pitch-explorer .box.field { flex: none; aspect-ratio: 1.15; max-width: 100%; }
+    #pitch-explorer .box.pitch { flex: none; height: 220px; }
+  }
+</style>
 <div id="pitch-explorer">
-  <style>
-    html, body { margin: 0; background: #14171a; }
-    #pitch-explorer { box-sizing: border-box; color: #e6e9ed; background: #14171a; font: 14px system-ui, sans-serif; padding: 14px; width: 100%; height: 100vh; overflow: hidden; display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 18px; }
-    #pitch-explorer * { box-sizing: border-box; }
-    #pitch-explorer h1 { font-size: 19px; font-weight: 500; margin: 0 0 4px; }
-    #pitch-explorer .sub { color: #b9c0c9; margin: 0 0 8px; font-size: 12.5px; line-height: 1.45; }
-    #pitch-explorer .controls { display: grid; grid-template-columns: 52px minmax(80px, 1fr) 80px; gap: 8px; align-items: center; margin-top: 8px; font-size: 13px; }
-    #pitch-explorer input[type="range"] { width: 100%; }
-    #pitch-explorer input[type="text"] { width: 100%; background: #1b1f24; color: #e6e9ed; border: 1px solid #4a525c; border-radius: 4px; padding: 2px 6px; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; }
-    #pitch-explorer input[type="text"].bad { border-color: #f85149; }
-    #pitch-explorer .row { margin-top: 12px; }
-    #pitch-explorer button { background: #1b1f24; color: #e6e9ed; border: 1px solid #4a525c; border-radius: 4px; padding: 3px 8px; font: inherit; font-size: 13px; cursor: pointer; }
-    #pitch-explorer .sep { border-top: 1px solid #2b3138; margin: 12px 0 4px; }
-    #pitch-explorer .h0 { color: #ffd166; }
-    #pitch-explorer .h1 { color: #56d4c0; }
-    #pitch-explorer .h2 { color: #d2a8ff; }
-    #pitch-explorer .caption { color: #b9c0c9; font-size: 12px; margin: 4px 0 0; line-height: 1.45; }
-    #pitch-explorer .out { margin-top: 2px; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; border-collapse: collapse; }
-    #pitch-explorer .out td { padding: 0 8px 0 0; text-align: right; }
-    #pitch-explorer .out td:first-child { text-align: left; color: #b9c0c9; font-family: system-ui; }
-    #pitch-explorer .out th { font: 12px system-ui; color: #b9c0c9; text-align: right; padding: 0 8px 2px 0; font-weight: 400; }
-    #pitch-explorer .left { min-height: 0; overflow-y: auto; }
-    #pitch-explorer .right { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
-    #pitch-explorer .box { position: relative; min-height: 0; }
-    #pitch-explorer .box.field { flex: 1 1 0; }
-    #pitch-explorer .box.pitch { flex: 0 0 26%; }
-    #pitch-explorer canvas { position: absolute; inset: 0; width: 100%; height: 100%; background: #1b1f24; border: 1px solid #4a525c; }
-    #pitch-explorer #pe-field { cursor: move; touch-action: none; }
-  </style>
   <div class="left">
-    <h1>pitch schedule explorer</h1>
-    <p class="sub">Hold <span class="h0">pitch<sub>0</sub></span> for n<sub>0</sub> ticks, then <span class="h1">pitch<sub>1</sub></span> for n<sub>1</sub>, then <span class="h2">pitch<sub>2</sub></span> for n<sub>2</sub>, from v0. Physics is the f64 libm transcription of <code>plot_field_replay.step</code>, not mth_lut.</p>
-    <div class="controls"><label for="pe-vz">v<sub>z</sub>0</label><input id="pe-vz" type="range" min="-0.5" max="3.5" step="0.001"><input id="pe-vz-t" type="text"></div>
-    <div class="controls"><label for="pe-vy">v<sub>y</sub>0</label><input id="pe-vy" type="range" min="-3" max="2" step="0.001"><input id="pe-vy-t" type="text"></div>
-    <div id="pe-holds"></div>
-    <div class="row"><button id="pe-fit">fit view to trajectory</button></div>
-    <p class="caption">Text boxes take any value, past the slider's range too. State lives in the URL hash.</p>
-    <div class="sep"></div>
-    <table class="out" id="pe-out"></table>
-    <p class="caption">ΔTE is total energy in blocks: altitude plus |v|²/2g, with g = 0.08 b/t². Ends are at the last tick of each hold.</p>
+    <div>
+      <h1>Elytra pitch explorer</h1>
+      <p class="sub">Fly a schedule of pitch segments from a starting velocity v0. Each segment moves its pitch linearly from start to end over its ticks, both ends included. Pitch is Minecraft's: negative is nose up. Physics is vanilla elytra flight at yaw 0, in double precision without the game's sine table.</p>
+    </div>
+    <div class="controls"><label for="pe-vz">v<sub>z</sub>0</label><input id="pe-vz" type="range" min="-0.5" max="3.5" step="0.001"><input id="pe-vz-t" type="text" aria-label="starting vz"></div>
+    <div class="controls"><label for="pe-vy">v<sub>y</sub>0</label><input id="pe-vy" type="range" min="-3" max="2" step="0.001"><input id="pe-vy-t" type="text" aria-label="starting vy"></div>
+    <div class="segs" id="pe-segs"></div>
+    <div><button id="pe-add">+ add segment</button></div>
+    <div>
+      <label for="pe-code" class="caption">Schedule code. Paste one here to load it.</label>
+      <div class="code-row"><input id="pe-code" type="text" spellcheck="false"><button id="pe-copy">copy</button></div>
+    </div>
+    <p class="caption">Velocities are in blocks per tick. ΔTE is the gain in total energy since v0, in blocks: altitude plus |v|²/2g, with g = 0.08 b/t². ΔTE/n is that gain per tick.</p>
   </div>
   <div class="right">
     <div class="box field"><canvas id="pe-field" aria-label="velocity plane with the schedule's trajectory over the one-tick energy field"></canvas></div>
-    <p class="caption">Drag v0 to move it, drag elsewhere to pan; wheel zooms, double-click resets. Hover either plot to mark a tick on both.</p>
-    <div class="box pitch"><canvas id="pe-pitch" aria-label="pitch against tick"></canvas></div>
+    <div class="bar">
+      <div class="readout" id="pe-read"></div>
+      <button id="pe-fit">fit view</button><button id="pe-reset">reset view</button>
+    </div>
+    <p class="caption">Drag v0 to move it, drag elsewhere to pan; wheel zooms.</p>
+    <div class="box pitch"><canvas id="pe-pitch" aria-label="pitch against tick, editable by dragging"></canvas></div>
+    <p class="caption">Drag a segment's line or its dots to change its pitch, and the triangles on the tick axis to move where segments switch or end. Pitch snaps to 1°; hold shift for 0.1°.</p>
   </div>
   <script>
   (() => {
     const root = document.querySelector("#pitch-explorer");
     const $q = s => root.querySelector(s);
     const G = 0.08, DRAG_Y = Math.fround(0.98), DRAG_Z = Math.fround(0.99);
-    const COLORS = ["#ffd166", "#56d4c0", "#d2a8ff"];
-    const NH = COLORS.length;
+    const COLORS = ["#ffd166", "#56d4c0", "#d2a8ff", "#ff9e7a", "#79c0ff", "#b5e07a"];
+    const color = k => COLORS[k % COLORS.length];
+    const css = getComputedStyle(document.documentElement);
+    const T = Object.fromEntries(["bg", "panel", "line", "fg", "muted", "mono"].map(k => [k, css.getPropertyValue(`--${k}`).trim()]));
 
     // One tick of update_fall_flying_movement at yaw 0, as tools/plot_field_replay.py `step`.
     function step(vy, vz, pitch) {
@@ -70,35 +108,53 @@
     }
     const te = (vy, vz) => (vy*vy + vz*vz)/(2*G);
 
-    // ---- hold controls ----
-    let holdsHtml = "";
-    for(let k=0;k<NH;k++) holdsHtml += `<div class="sep"></div>
-      <div class="controls"><label for="pe-p${k}" class="h${k}">pitch<sub>${k}</sub></label><input id="pe-p${k}" type="range" min="-90" max="90" step="0.1"><input id="pe-p${k}-t" type="text"></div>
-      <div class="controls"><label for="pe-n${k}" class="h${k}">n<sub>${k}</sub></label><input id="pe-n${k}" type="range" min="0" max="300" step="1"><input id="pe-n${k}-t" type="text"></div>`;
-    $q("#pe-holds").innerHTML = holdsHtml;
-
     // ---- state ----
-    const S = {vz: 1.102, vy: -0.4803, p0: 40, n0: 40, p1: 90, n1: 5, p2: 10, n2: 262};
+    // A segment holds {a, b, n, tie}: pitch a on its first tick, b on its last, linear between.
+    // a rough elytra cycle: dive, level, pull-up, then a bent climb; tuned by hand and a greedy integer search on ΔTE/n
+    const S = {vz: 0.3, vy: 0.3, segs: [{a: 25, b: 50, n: 156, tie: false}, {a: 0, b: 0, n: 14, tie: true}, {a: -12, b: -52, n: 3, tie: false}, {a: -68, b: -23, n: 40, tie: false}, {a: -23, b: -12, n: 49, tie: false}]};
     const VIEW0 = {x: [-0.25, 3.25], y: [-1.6, 1.4]};
     // `want` is the region asked for (by reset, fit, pan or zoom); `view` is what's drawn, `want`
     // widened on one axis to the canvas's aspect. Kept apart so that resizing doesn't ratchet.
     let want = {x: VIEW0.x.slice(), y: VIEW0.y.slice()}, view = want;
     let hover = null;   // tick index into the trajectory, or null
 
-    // ends[k] is the tick on which hold k ends; tick i (1-based) belongs to the first hold with i <= ends[k]
-    const ends = () => { let c = 0; return Array.from({length: NH}, (_, k) => c += S[`n${k}`]); };
-    const holdOf = (i, e) => { for(let k=0;k<NH;k++) if(i <= e[k]) return k; return NH - 1; };
-
+    const segPitch = (s, j) => s.n <= 1 ? s.a : s.a + (s.b - s.a)*j/(s.n - 1);
     function simulate() {
-      const pts = [{t: 0, vy: S.vy, vz: S.vz, y: 0, p: null}];
+      const pts = [{t: 0, vy: S.vy, vz: S.vz, y: 0, p: null, k: null}];
       let vy = S.vy, vz = S.vz, y = 0, t = 0;
-      for(let k=0;k<NH;k++) for(let j=0;j<S[`n${k}`];j++) {
-        const p = S[`p${k}`];
-        [vy, vz] = step(vy, vz, p);
-        y += vy;   // vanilla moves after the velocity update, so the climb is the new vy
-        pts.push({t: ++t, vy, vz, y, p, k});
-      }
+      S.segs.forEach((s, k) => {
+        for(let j=0;j<s.n;j++) {
+          const p = segPitch(s, j);
+          [vy, vz] = step(vy, vz, p);
+          y += vy;   // vanilla moves after the velocity update, so the climb is the new vy
+          pts.push({t: ++t, vy, vz, y, p, k});
+        }
+      });
       return pts;
+    }
+
+    // ---- schedule code: vz=..&vy=..&s=a,n_a,b,n_.. (two numbers for a constant segment) ----
+    const fmtN = v => String(+(+v).toFixed(6));
+    function encode() {
+      const s = S.segs.map(g => g.tie ? `${fmtN(g.a)},${g.n}` : `${fmtN(g.a)},${fmtN(g.b)},${g.n}`).join("_");
+      return `vz=${fmtN(S.vz)}&vy=${fmtN(S.vy)}&s=${s}`;
+    }
+    function decode(str) {
+      const h = new URLSearchParams(str.trim().replace(/^.*#/, ""));
+      const num = k => { const v = Number(h.get(k)); if(!h.has(k) || h.get(k).trim() === "" || !isFinite(v)) throw k; return v; };
+      const out = {vz: num("vz"), vy: num("vy"), segs: []};
+      const okP = p => Math.abs(p) <= 90, okN = n => Number.isInteger(n) && n >= 0 && n <= 100000;
+      if(h.has("s")) {
+        for(const part of h.get("s").split("_").filter(Boolean)) {
+          const v = part.split(",").map(Number);
+          if(v.some(x => !isFinite(x))) throw "s";
+          if(v.length === 2 && okP(v[0]) && okN(v[1])) out.segs.push({a: v[0], b: v[0], n: v[1], tie: true});
+          else if(v.length === 3 && okP(v[0]) && okP(v[1]) && okN(v[2])) out.segs.push({a: v[0], b: v[1], n: v[2], tie: v[0] === v[1]});
+          else throw "s";
+        }
+      } else for(let k=0;h.has(`p${k}`);k++) out.segs.push({a: num(`p${k}`), b: num(`p${k}`), n: Math.max(0, Math.round(num(`n${k}`))), tie: true});   // the old pK/nK form
+      if(!out.segs.length) throw "s";
+      return out;
     }
 
     // ---- energy field: best one-tick ΔTE over pitch ----
@@ -137,18 +193,20 @@
       const rect = canvas.getBoundingClientRect(), dpr = Math.min(devicePixelRatio || 1, 2);
       canvas.width = Math.round(rect.width*dpr); canvas.height = Math.round(rect.height*dpr);
       const ctx = canvas.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.fillStyle = "#14171a"; ctx.fillRect(0, 0, rect.width, rect.height);
-      ctx.font = "11px system-ui";
+      ctx.fillStyle = T.bg; ctx.fillRect(0, 0, rect.width, rect.height);
+      ctx.font = `11px ${T.mono}`;
       return [ctx, rect.width, rect.height];
     }
+    const GRID = "rgba(185,192,201,.16)", ZERO = "rgba(230,233,237,.35)", HOT = "#ffffff";
 
     // ---- field plot ----
     const fieldCv = $q("#pe-field");
     let fgeom = null;
     function drawField(pts) {
-      const [ctx, w, h] = setup(fieldCv), m = {l: 42, r: 8, t: 8, b: 30};
-      // equal aspect: fit the view's span into the box, centered on the view
+      const [ctx, w, h] = setup(fieldCv), m = {l: 44, r: 8, t: 8, b: 30};
+      // equal aspect: fit the requested region into the box, centered on it
       const bw = w - m.l - m.r, bh = h - m.t - m.b;
+      if(bw <= 0 || bh <= 0) return;
       const sc = Math.min(bw/(want.x[1]-want.x[0]), bh/(want.y[1]-want.y[0]));
       const cxv = (want.x[0]+want.x[1])/2, cyv = (want.y[0]+want.y[1])/2;
       const xr = [cxv - bw/sc/2, cxv + bw/sc/2], yr = [cyv - bh/sc/2, cyv + bh/sc/2];
@@ -156,10 +214,10 @@
       const X = x => m.l + (x - xr[0])*sc, Y = y => m.t + (yr[1] - y)*sc;
       const Xi = px => xr[0] + (px - m.l)/sc, Yi = py => yr[1] - (py - m.t)/sc;
       fgeom = {X, Y, Xi, Yi, sc};
-      ctx.drawImage(fieldImage(Math.round(bw/2), Math.round(bh/2)), m.l, m.t, bw, bh);
-      ctx.fillStyle = "#b9c0c9";
+      ctx.drawImage(fieldImage(Math.max(1, Math.round(bw/2)), Math.max(1, Math.round(bh/2))), m.l, m.t, bw, bh);
+      ctx.fillStyle = T.muted;
       const stp = niceStep(Math.max(xr[1]-xr[0], yr[1]-yr[0]), 7), dg = Math.max(0, Math.ceil(-Math.log10(stp) - 1e-9));
-      ctx.strokeStyle = "rgba(185,192,201,.16)"; ctx.lineWidth = 1;
+      ctx.strokeStyle = GRID; ctx.lineWidth = 1;
       for(let x = Math.ceil(xr[0]/stp)*stp; x <= xr[1]; x += stp) {
         ctx.beginPath(); ctx.moveTo(X(x), m.t); ctx.lineTo(X(x), m.t + bh); ctx.stroke();
         ctx.textAlign = "center"; ctx.fillText(x.toFixed(dg), X(x), m.t + bh + 13);
@@ -171,172 +229,316 @@
       ctx.textAlign = "center"; ctx.fillText("vz (b/t)", m.l + bw/2, h - 3);
       ctx.save(); ctx.translate(11, m.t + bh/2); ctx.rotate(-Math.PI/2); ctx.fillText("vy (b/t)", 0, 0); ctx.restore();
       ctx.save(); ctx.beginPath(); ctx.rect(m.l, m.t, bw, bh); ctx.clip();
-      ctx.strokeStyle = "rgba(230,233,237,.35)"; ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = ZERO; ctx.setLineDash([3, 3]);
       ctx.beginPath(); ctx.moveTo(m.l, Y(0)); ctx.lineTo(m.l + bw, Y(0)); ctx.moveTo(X(0), m.t); ctx.lineTo(X(0), m.t + bh); ctx.stroke();
       ctx.setLineDash([]);
-      // trajectory: each segment colored by the hold that produced its endpoint
+      // trajectory: each step colored by the segment that produced its endpoint
+      ctx.lineWidth = 1.4;
       for(let i=1;i<pts.length;i++) {
-        ctx.strokeStyle = COLORS[pts[i].k]; ctx.lineWidth = 1.4;
+        ctx.strokeStyle = color(pts[i].k);
         ctx.beginPath(); ctx.moveTo(X(pts[i-1].vz), Y(pts[i-1].vy)); ctx.lineTo(X(pts[i].vz), Y(pts[i].vy)); ctx.stroke();
       }
       for(let i=1;i<pts.length;i++) {
-        ctx.beginPath(); ctx.arc(X(pts[i].vz), Y(pts[i].vy), 2, 0, Math.PI*2); ctx.fillStyle = COLORS[pts[i].k]; ctx.fill();
+        ctx.beginPath(); ctx.arc(X(pts[i].vz), Y(pts[i].vy), 2, 0, Math.PI*2); ctx.fillStyle = color(pts[i].k); ctx.fill();
       }
-      // switch ticks (where a hold ends and a later one runs) and the end
-      const e = ends(), N = e[NH-1];
-      for(let k=0;k<NH-1;k++) if(e[k] > 0 && e[k] < N && S[`n${k}`] > 0) {
-        const q = pts[e[k]]; ctx.beginPath(); ctx.arc(X(q.vz), Y(q.vy), 4.5, 0, Math.PI*2); ctx.strokeStyle = "#e6e9ed"; ctx.lineWidth = 1.5; ctx.stroke();
-      }
-      const last = pts[pts.length-1]; if(pts.length > 1) { ctx.beginPath(); ctx.rect(X(last.vz)-4, Y(last.vy)-4, 8, 8); ctx.strokeStyle = "#e6e9ed"; ctx.lineWidth = 1.5; ctx.stroke(); }
-      ctx.beginPath(); ctx.arc(X(S.vz), Y(S.vy), 5, 0, Math.PI*2); ctx.fillStyle = "#ffffff"; ctx.fill(); ctx.strokeStyle = "#14171a"; ctx.lineWidth = 1.5; ctx.stroke();
-      if(hover !== null && pts[hover]) { const q = pts[hover]; ctx.beginPath(); ctx.arc(X(q.vz), Y(q.vy), 6, 0, Math.PI*2); ctx.strokeStyle = "#ff7b72"; ctx.lineWidth = 2; ctx.stroke(); }
+      // switch ticks (the last tick of a segment that a later one follows) and the end
+      ctx.strokeStyle = T.fg; ctx.lineWidth = 1.5;
+      for(let i=1;i<pts.length-1;i++) if(pts[i].k !== pts[i+1].k) { ctx.beginPath(); ctx.arc(X(pts[i].vz), Y(pts[i].vy), 4.5, 0, Math.PI*2); ctx.stroke(); }
+      const last = pts[pts.length-1]; if(pts.length > 1) { ctx.beginPath(); ctx.rect(X(last.vz)-4, Y(last.vy)-4, 8, 8); ctx.stroke(); }
+      ctx.beginPath(); ctx.arc(X(S.vz), Y(S.vy), 5, 0, Math.PI*2); ctx.fillStyle = "#ffffff"; ctx.fill(); ctx.strokeStyle = T.bg; ctx.stroke();
+      if(hover !== null && pts[hover]) { const q = pts[hover]; ctx.beginPath(); ctx.arc(X(q.vz), Y(q.vy), 7, 0, Math.PI*2); ctx.strokeStyle = HOT; ctx.lineWidth = 2; ctx.stroke(); }
       ctx.restore();
-      ctx.textAlign = "left"; ctx.fillStyle = "#b9c0c9";
+      ctx.textAlign = "left"; ctx.fillStyle = T.muted;
       ctx.fillText("● v0   ○ switch   □ end", m.l + 6, m.t + 14);
     }
 
-    // ---- pitch vs tick ----
+    // ---- pitch vs tick, which is also the schedule editor ----
     const pitchCv = $q("#pe-pitch");
-    let pgeom = null;
-    function drawPitch() {
-      const [ctx, w, h] = setup(pitchCv), m = {l: 42, r: 10, t: 10, b: 30};
-      const e = ends(), N = Math.max(1, e[NH-1]), bw = w - m.l - m.r, bh = h - m.t - m.b;
+    let pgeom = null, pdrag = null, phover = null;   // phover: the handle under the pointer
+    // handles: "a"/"b" are a ramp's end pitches, "both" a constant segment's pitch, "body" the
+    // whole segment's line (shifts a and b together), "split"/"end" the tick where a segment ends
+    function handles() {
+      if(!pgeom) return [];
+      const {X, Y, bh, m} = pgeom, out = [];
+      let t0 = 0;
+      S.segs.forEach((s, k) => {
+        const t1 = t0 + s.n;
+        if(s.n > 0) {
+          if(s.tie) out.push({kind: "both", k, x: X((t0 + t1)/2), y: Y(s.a)});
+          else out.push({kind: "a", k, x: X(t0 + 0.5), y: Y(s.a)}, {kind: "b", k, x: X(t1 - 0.5), y: Y(s.b)});
+        }
+        out.push({kind: k < S.segs.length - 1 ? "split" : "end", k, x: X(t1), y: m.t + bh - 6, t0});
+        t0 = t1;
+      });
+      return out;
+    }
+    function pitchHit(px, py) {
+      const hs = handles();
+      // dots and tick-axis triangles first, nearest wins; then a segment's line
+      let best = null, bd = 9;
+      for(const h of hs) { const d = Math.hypot(h.x - px, h.y - py); if(d < bd) { bd = d; best = h; } }
+      if(best) return best;
+      const t = pgeom.Xi(px);
+      let t0 = 0;
+      for(let k=0;k<S.segs.length;k++) {
+        const s = S.segs[k];
+        if(s.n > 0 && t >= t0 && t <= t0 + s.n) {
+          const j = Math.min(s.n - 1, Math.max(0, Math.floor(t - t0)));
+          if(Math.abs(pgeom.Y(segPitch(s, j)) - py) < 8) return {kind: "body", k};
+        }
+        t0 += s.n;
+      }
+      return null;
+    }
+    function drawPitch(pts) {
+      const [ctx, w, h] = setup(pitchCv), m = {l: 44, r: 12, t: 10, b: 30};
+      // while dragging, the tick scale holds still so the handle stays under the pointer
+      const N = Math.max(1, pts.length - 1, pdrag ? pdrag.N : 0), bw = w - m.l - m.r, bh = h - m.t - m.b;
+      if(bw <= 0 || bh <= 0) return;
       const X = t => m.l + t/N*bw, Y = p => m.t + (p + 90)/180*bh;   // −90 (nose up) at the top
-      pgeom = {Xi: px => (px - m.l)/bw*N};
-      ctx.fillStyle = "#b9c0c9"; ctx.strokeStyle = "rgba(185,192,201,.16)"; ctx.lineWidth = 1;
+      pgeom = {X, Y, Xi: px => (px - m.l)/bw*N, Pi: py => (py - m.t)/bh*180 - 90, m, bw, bh, N};
+      ctx.fillStyle = T.muted; ctx.strokeStyle = GRID; ctx.lineWidth = 1;
       for(let p=-90;p<=90;p+=30) {
         ctx.beginPath(); ctx.moveTo(m.l, Y(p)); ctx.lineTo(m.l + bw, Y(p)); ctx.stroke();
         ctx.textAlign = "right"; ctx.fillText(String(p), m.l - 4, Y(p) + 4);
       }
-      const ts = niceStep(N, 8);
+      const ts = Math.max(1, niceStep(N, 8));
       for(let t=0;t<=N+1e-9;t+=ts) {
         ctx.beginPath(); ctx.moveTo(X(t), m.t); ctx.lineTo(X(t), m.t + bh); ctx.stroke();
         ctx.textAlign = "center"; ctx.fillText(String(Math.round(t)), X(t), m.t + bh + 13);
       }
       ctx.textAlign = "center"; ctx.fillText("tick", m.l + bw/2, h - 3);
       ctx.save(); ctx.translate(11, m.t + bh/2); ctx.rotate(-Math.PI/2); ctx.fillText("pitch (°)", 0, 0); ctx.restore();
-      ctx.strokeStyle = "rgba(230,233,237,.35)"; ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = ZERO; ctx.setLineDash([3, 3]);
       ctx.beginPath(); ctx.moveTo(m.l, Y(0)); ctx.lineTo(m.l + bw, Y(0)); ctx.stroke(); ctx.setLineDash([]);
-      // tick i (1-based) applies its pitch over [i-1, i]; each hold draws its riser from the previous level
-      ctx.lineWidth = 2.2;
-      let prev = null;
-      for(let k=0;k<NH;k++) {
-        if(!S[`n${k}`]) continue;
-        const a = e[k] - S[`n${k}`], p = S[`p${k}`];
-        ctx.strokeStyle = COLORS[k]; ctx.beginPath();
-        if(prev === null) ctx.moveTo(X(a), Y(p)); else { ctx.moveTo(X(a), Y(prev)); ctx.lineTo(X(a), Y(p)); }
-        ctx.lineTo(X(e[k]), Y(p)); ctx.stroke();
-        prev = p;
-      }
       if(hover !== null && hover > 0) {
-        ctx.fillStyle = "rgba(255,123,114,.18)"; ctx.fillRect(X(hover-1), m.t, Math.max(1, X(hover) - X(hover-1)), bh);
-        ctx.strokeStyle = "#ff7b72"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(X(hover), m.t); ctx.lineTo(X(hover), m.t + bh); ctx.stroke();
+        ctx.fillStyle = "rgba(255,255,255,.14)"; ctx.fillRect(X(hover-1), m.t, Math.max(1, X(hover) - X(hover-1)), bh);
+        ctx.strokeStyle = HOT; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(X(hover), m.t); ctx.lineTo(X(hover), m.t + bh); ctx.stroke();
       }
-      ctx.strokeStyle = "#4a525c"; ctx.lineWidth = 1; ctx.strokeRect(m.l, m.t, bw, bh);
+      // tick i applies its pitch over [i-1, i]; a riser joins each tick to the one before
+      const active = pdrag || phover;
+      for(let i=1;i<pts.length;i++) {
+        const lit = active && active.k === pts[i].k && ["a", "b", "both", "body"].includes(active.kind);
+        ctx.lineWidth = lit ? 3.4 : 2.2;
+        ctx.strokeStyle = color(pts[i].k); ctx.beginPath();
+        ctx.moveTo(X(i-1), Y(i > 1 ? pts[i-1].p : pts[i].p)); ctx.lineTo(X(i-1), Y(pts[i].p)); ctx.lineTo(X(i), Y(pts[i].p)); ctx.stroke();
+      }
+      for(const hd of handles()) {
+        const on = active && active.k === hd.k && active.kind === hd.kind;
+        if(hd.kind === "split" || hd.kind === "end") {
+          const sz = on ? 7 : 5;
+          ctx.beginPath(); ctx.moveTo(hd.x, hd.y - sz); ctx.lineTo(hd.x - sz, hd.y + sz*0.7); ctx.lineTo(hd.x + sz, hd.y + sz*0.7); ctx.closePath();
+          ctx.fillStyle = on ? HOT : T.fg; ctx.fill();
+          if(on) { ctx.strokeStyle = HOT; ctx.lineWidth = 1; ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(hd.x, m.t); ctx.lineTo(hd.x, hd.y - sz); ctx.stroke(); ctx.setLineDash([]); }
+        } else {
+          ctx.beginPath(); ctx.arc(hd.x, hd.y, on ? 6 : 4.5, 0, Math.PI*2);
+          ctx.fillStyle = color(hd.k); ctx.fill(); ctx.strokeStyle = on ? HOT : T.bg; ctx.lineWidth = 1.5; ctx.stroke();
+        }
+      }
+      ctx.strokeStyle = T.line; ctx.lineWidth = 1; ctx.strokeRect(m.l, m.t, bw, bh);
+    }
+    const clampP = p => Math.max(-90, Math.min(90, p));
+    const snapP = (p, fine) => clampP(fine ? Math.round(p*10)/10 : Math.round(p));
+    pitchCv.addEventListener("pointerdown", e => {
+      if(!pgeom) return;
+      const [px, py] = local(pitchCv, e), hit = pitchHit(px, py);
+      if(!hit) return;
+      e.preventDefault();
+      try { pitchCv.setPointerCapture(e.pointerId); } catch {}
+      const s = S.segs[hit.k];
+      pdrag = {...hit, py, a0: s.a, b0: s.b, n0: s.n, n1: S.segs[hit.k + 1] ? S.segs[hit.k + 1].n : 0, N: pgeom.N};
+      draw();
+    });
+    pitchCv.addEventListener("pointermove", e => {
+      if(!pgeom) return;
+      const [px, py] = local(pitchCv, e);
+      if(pdrag) {
+        const d = pdrag, s = S.segs[d.k], fine = e.shiftKey;
+        if(d.kind === "a") { s.a = snapP(pgeom.Pi(py), fine); if(s.tie) s.b = s.a; }
+        else if(d.kind === "b") { s.b = snapP(pgeom.Pi(py), fine); if(s.tie) s.a = s.b; }
+        else if(d.kind === "both" || d.kind === "body") {
+          // shift by the pointer's travel; when a ramp hits ±90, stop both ends so its slope holds
+          let dp = pgeom.Pi(py) - pgeom.Pi(d.py);
+          dp = Math.max(-90 - Math.min(d.a0, d.b0), Math.min(90 - Math.max(d.a0, d.b0), dp));
+          s.a = snapP(d.a0 + dp, fine); s.b = s.tie ? s.a : snapP(d.b0 + dp, fine);
+        } else {
+          const t = Math.round(pgeom.Xi(px)) - d.t0;
+          if(d.kind === "split") { s.n = Math.max(0, Math.min(d.n0 + d.n1, t)); S.segs[d.k + 1].n = d.n0 + d.n1 - s.n; }
+          else s.n = Math.max(0, Math.min(100000, t));
+        }
+        const t = Math.ceil(pgeom.Xi(px));
+        hover = t >= 1 && t < lastPts.length + 1 ? t : null;
+        update();
+        return;
+      }
+      const hit = pitchHit(px, py);
+      pitchCv.style.cursor = !hit ? "default" : (hit.kind === "split" || hit.kind === "end") ? "ew-resize" : "ns-resize";
+      const changed = (hit && hit.kind) !== (phover && phover.kind) || (hit && hit.k) !== (phover && phover.k);
+      phover = hit;
+      const N = lastPts.length - 1, t = Math.ceil(pgeom.Xi(px));
+      const nt = t >= 1 && t <= N ? t : null;
+      if(changed && nt === hover) draw(); else setHover(nt);
+    });
+    const endPitchDrag = () => { if(pdrag) { pdrag = null; draw(); } };
+    pitchCv.addEventListener("pointerup", endPitchDrag);
+    pitchCv.addEventListener("pointercancel", endPitchDrag);
+    pitchCv.addEventListener("pointerleave", () => { if(!pdrag) { phover = null; hover = null; draw(); } });
+
+    // ---- hovered tick readout ----
+    const readEl = $q("#pe-read");
+    const f = (v, d) => (v < 0 ? "−" : "") + Math.abs(v).toFixed(d);
+    function renderRead(pts) {
+      // the hovered tick, else the last one
+      const q = hover !== null ? pts[hover] : pts.length > 1 ? pts[pts.length - 1] : null;
+      readEl.classList.toggle("idle", !q);
+      if(!q) { readEl.textContent = "The schedule is empty."; return; }
+      // every field is padded to its widest value over this schedule, so nothing shifts as the tick moves
+      const p0 = pts[0], dte = r => r.y + te(r.vy, r.vz) - te(p0.vy, p0.vz);
+      const cols = [
+        ["tick", r => String(r.t)],
+        ["segment", r => String(r.k + 1)],
+        ["pitch", r => f(r.p, 2), "°"],
+        ["vz", r => f(r.vz, 4)],
+        ["vy", r => f(r.vy, 4)],
+        ["Δy", r => f(r.y, 2)],
+        ["ΔTE", r => f(dte(r), 3)],
+        ["ΔTE/n", r => f(dte(r)/r.t, 4)],
+      ];
+      const rest = pts.slice(1);
+      const parts = cols.map(([label, fn, unit = ""]) => {
+        const w = Math.max(...rest.map(r => fn(r).length));
+        return `${label} ${fn(q).padStart(w)}${unit}`;
+      });
+      readEl.innerHTML = `<span style="color:${color(q.k)}">■</span> ` + parts.join("   ");
     }
 
-    // ---- readout ----
-    const f = (v, d = 4) => (v >= 0 ? " " : "") + v.toFixed(d);
-    function renderOut(pts) {
-      // one column per hold, plus total and the hovered tick
-      const e = ends(), p0 = pts[0];
-      const cols = Array.from({length: NH}, (_, k) => ({head: `<span class="h${k}">hold ${k}</span>`, q: pts[e[k]], a: pts[e[k] - S[`n${k}`]]}));
-      cols.push({head: "total", q: pts[pts.length-1], a: p0});
-      const hv = hover !== null && pts[hover] ? pts[hover] : null;
-      if(hv) cols.push({head: `<span style="color:#ff7b72">tick ${hv.t}</span>`, q: hv, a: p0, tick: true});
-      const dte = c => c.q.y + te(c.q.vy, c.q.vz) - (c.a.y + te(c.a.vy, c.a.vz));
-      const rows = [
-        ["ticks", c => c.tick ? "" : String(c.q.t - c.a.t)],
-        ["v<sub>z</sub> end", c => f(c.q.vz, 3)],
-        ["v<sub>y</sub> end", c => f(c.q.vy, 3)],
-        ["Δy", c => f(c.q.y - c.a.y, 1)],
-        ["ΔTE", c => f(dte(c), 2)],
-        ["ΔTE/tick", c => c.tick ? "" : c.q.t > c.a.t ? f(dte(c)/(c.q.t - c.a.t), 3) : "—"],
-      ];
-      let html = `<tr><th></th>${cols.map(c => `<th>${c.head}</th>`).join("")}</tr>`;
-      for(const [label, fn] of rows) html += `<tr><td>${label}</td>${cols.map(c => `<td>${fn(c)}</td>`).join("")}</tr>`;
-      $q("#pe-out").innerHTML = html;
+    // ---- segment controls ----
+    const segsEl = $q("#pe-segs");
+    function renderSegs() {
+      segsEl.innerHTML = S.segs.map((s, k) => `
+        <div class="seg" style="--c:${color(k)}">
+          <div class="seg-head"><span class="name">segment ${k + 1}</span>
+            <label><input type="checkbox" id="pe-s${k}-tie"${s.tie ? " checked" : ""}> constant</label>
+            <button id="pe-s${k}-up" aria-label="Move segment ${k + 1} earlier" title="move earlier"${k === 0 ? " disabled" : ""}>↑</button>
+            <button id="pe-s${k}-down" aria-label="Move segment ${k + 1} later" title="move later"${k === S.segs.length - 1 ? " disabled" : ""}>↓</button>
+            <button id="pe-s${k}-del" aria-label="Remove segment ${k + 1}" title="remove"${S.segs.length < 2 ? " disabled" : ""}>×</button></div>
+          <div class="controls"><label for="pe-s${k}-a">${s.tie ? "pitch" : "pitch start"}</label><input id="pe-s${k}-a" type="range" min="-90" max="90" step="0.1"><input id="pe-s${k}-a-t" type="text" aria-label="segment ${k + 1} ${s.tie ? "pitch" : "start pitch"}"></div>
+          <div class="controls"${s.tie ? " hidden" : ""}><label for="pe-s${k}-b">pitch end</label><input id="pe-s${k}-b" type="range" min="-90" max="90" step="0.1"><input id="pe-s${k}-b-t" type="text" aria-label="segment ${k + 1} end pitch"></div>
+          <div class="controls"><label for="pe-s${k}-n">ticks</label><input id="pe-s${k}-n" type="range" min="0" max="300" step="1"><input id="pe-s${k}-n-t" type="text" aria-label="segment ${k + 1} ticks"></div>
+        </div>`).join("");
+      S.segs.forEach((s, k) => {
+        for(const f of ["a", "b", "n"]) {
+          const bind = v => { s[f] = v; if(f === "a" && s.tie) s.b = v; update(`pe-s${k}-${f}-t`); };
+          $q(`#pe-s${k}-${f}`).addEventListener("input", e => bind(+e.target.value));
+          $q(`#pe-s${k}-${f}-t`).addEventListener("change", e => {
+            const str = e.target.value.trim(), v = Number(str);
+            const ok = str !== "" && isFinite(v) && (f === "n" ? Number.isInteger(v) && v >= 0 && v <= 100000 : Math.abs(v) <= 90);
+            e.target.classList.toggle("bad", !ok);
+            if(ok) bind(v);
+          });
+        }
+        $q(`#pe-s${k}-tie`).addEventListener("change", e => { s.tie = e.target.checked; if(s.tie) s.b = s.a; renderSegs(); update(); });
+        const move = d => { const j = k + d; if(j < 0 || j >= S.segs.length) return; [S.segs[k], S.segs[j]] = [S.segs[j], S.segs[k]]; renderSegs(); update(); $q(`#pe-s${j}-${d < 0 ? "up" : "down"}`).focus(); };
+        $q(`#pe-s${k}-up`).addEventListener("click", () => move(-1));
+        $q(`#pe-s${k}-down`).addEventListener("click", () => move(1));
+        $q(`#pe-s${k}-del`).addEventListener("click", () => { if(S.segs.length > 1) { S.segs.splice(k, 1); renderSegs(); update(); } });
+      });
     }
+    $q("#pe-add").addEventListener("click", () => {
+      const last = S.segs[S.segs.length - 1];
+      S.segs.push({a: last ? last.b : 0, b: last ? last.b : 0, n: 20, tie: true});
+      renderSegs(); update();
+      segsEl.lastElementChild.scrollIntoView({block: "nearest"});
+    });
 
     // ---- interaction ----
     const local = (cv, e) => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
-    let drag = null, lastPts = [];   // drag: null, "v0", or {px, py, view} for a pan
-    const onV0 = (px, py) => Math.hypot(fgeom.X(S.vz) - px, fgeom.Y(S.vy) - py) < 10;
+    let drag = null, lastPts = [];   // drag: null, "v0", or {px, py, want} for a pan
+    const onV0 = (px, py) => Math.hypot(fgeom.X(S.vz) - px, fgeom.Y(S.vy) - py) < 12;
     function nearestTick(px, py) {
       let best = null, bd = 10;
       lastPts.forEach((q, i) => { const d = Math.hypot(fgeom.X(q.vz) - px, fgeom.Y(q.vy) - py); if(d < bd) { bd = d; best = i; } });
       return best;
     }
+    const setHover = t => { if(t !== hover) { hover = t; draw(); } };
     fieldCv.addEventListener("pointerdown", e => {
+      if(!fgeom) return;
       const [px, py] = local(fieldCv, e);
-      fieldCv.setPointerCapture(e.pointerId);
-      drag = onV0(px, py) ? "v0" : {px, py, view: {x: view.x.slice(), y: view.y.slice()}};
+      try { fieldCv.setPointerCapture(e.pointerId); } catch {}
+      drag = onV0(px, py) ? "v0" : {px, py, want: {x: view.x.slice(), y: view.y.slice()}};
     });
     fieldCv.addEventListener("pointermove", e => {
+      if(!fgeom) return;
       const [px, py] = local(fieldCv, e);
-      if(drag === "v0") { set({vz: +fgeom.Xi(px).toFixed(4), vy: +fgeom.Yi(py).toFixed(4)}); return; }
+      if(drag === "v0") { S.vz = +fgeom.Xi(px).toFixed(4); S.vy = +fgeom.Yi(py).toFixed(4); update(); return; }
       if(drag) {
         const dx = (px - drag.px)/fgeom.sc, dy = (py - drag.py)/fgeom.sc;
-        want = {x: drag.view.x.map(v => v - dx), y: drag.view.y.map(v => v + dy)};
+        want = {x: drag.want.x.map(v => v - dx), y: drag.want.y.map(v => v + dy)};
         draw(); return;
       }
       fieldCv.style.cursor = onV0(px, py) ? "grab" : "move";
-      const t = nearestTick(px, py); if(t !== hover) { hover = t; draw(); }
+      setHover(nearestTick(px, py));
     });
-    fieldCv.addEventListener("pointerup", () => drag = null);
-    fieldCv.addEventListener("pointerleave", () => { if(hover !== null) { hover = null; draw(); } });
+    const endDrag = () => drag = null;
+    fieldCv.addEventListener("pointerup", endDrag);
+    fieldCv.addEventListener("pointercancel", endDrag);
+    fieldCv.addEventListener("pointerleave", () => { if(!drag) setHover(null); });
     fieldCv.addEventListener("wheel", e => {
       e.preventDefault();
       const [px, py] = local(fieldCv, e), cx = fgeom.Xi(px), cy = fgeom.Yi(py), k = Math.exp(e.deltaY*.0015);
       want = {x: view.x.map(v => cx + (v - cx)*k), y: view.y.map(v => cy + (v - cy)*k)};
       draw();
     }, {passive: false});
-    fieldCv.addEventListener("dblclick", () => { want = {x: VIEW0.x.slice(), y: VIEW0.y.slice()}; draw(); });
-    $q("#pe-fit").addEventListener("click", () => {
-      const zs = lastPts.map(q => q.vz), ys = lastPts.map(q => q.vy);
+    $q("#pe-reset").addEventListener("click", () => { want = {x: VIEW0.x.slice(), y: VIEW0.y.slice()}; draw(); });
+    function fitBox(pts) {
+      const zs = pts.map(q => q.vz), ys = pts.map(q => q.vy);
       const z0 = Math.min(...zs), z1 = Math.max(...zs), y0 = Math.min(...ys), y1 = Math.max(...ys);
       const pad = Math.max(z1 - z0, y1 - y0, 0.05)*0.08;
-      want = {x: [z0 - pad, z1 + pad], y: [y0 - pad, y1 + pad]};
-      draw();
-    });
-    pitchCv.addEventListener("pointermove", e => {
-      const [px] = local(pitchCv, e), N = ends()[NH-1];
-      const t = Math.ceil(pgeom.Xi(px));
-      const nt = t >= 1 && t <= N ? t : null;
-      if(nt !== hover) { hover = nt; draw(); }
-    });
-    pitchCv.addEventListener("pointerleave", () => { if(hover !== null) { hover = null; draw(); } });
+      return {x: [z0 - pad, z1 + pad], y: [y0 - pad, y1 + pad]};
+    }
+    $q("#pe-fit").addEventListener("click", () => { want = fitBox(lastPts); draw(); });
 
-    const KEYS = ["vz", "vy", ...Array.from({length: NH}, (_, k) => [`p${k}`, `n${k}`]).flat()];
-    const isN = k => k[0] === "n";
-    for(const k of KEYS) {
-      $q(`#pe-${k}`).addEventListener("input", e => set({[k]: +e.target.value}));
+    for(const k of ["vz", "vy"]) {
+      $q(`#pe-${k}`).addEventListener("input", e => { S[k] = +e.target.value; update(`pe-${k}-t`); });
       $q(`#pe-${k}-t`).addEventListener("change", e => {
-        const s = e.target.value.trim(), v = Number(s);
-        const ok = s !== "" && isFinite(v) && (!isN(k) || (Number.isInteger(v) && v >= 0 && v <= 100000)) && (k[0] !== "p" || Math.abs(v) <= 90);
+        const str = e.target.value.trim(), v = Number(str), ok = str !== "" && isFinite(v);
         e.target.classList.toggle("bad", !ok);
-        if(ok) set({[k]: v});
+        if(ok) { S[k] = v; update(); }
       });
     }
 
-    function set(patch) { Object.assign(S, patch); update(patch); }
+    const codeEl = $q("#pe-code");
+    codeEl.addEventListener("change", () => {
+      try { Object.assign(S, decode(codeEl.value)); codeEl.classList.remove("bad"); renderSegs(); update(); }
+      catch { codeEl.classList.add("bad"); }
+    });
+    $q("#pe-copy").addEventListener("click", e => {
+      const btn = e.currentTarget, done = msg => { btn.textContent = msg; setTimeout(() => btn.textContent = "copy", 1200); };
+      const pick = () => { codeEl.focus(); codeEl.select(); done("selected"); };
+      try { navigator.clipboard.writeText(codeEl.value).then(() => done("copied"), pick); } catch { pick(); }
+    });
+
     function draw() {
       const pts = lastPts = simulate();
       if(hover !== null && hover >= pts.length) hover = null;
-      drawField(pts); drawPitch(); renderOut(pts);
+      drawField(pts); drawPitch(pts); renderRead(pts);
     }
-    function update(patch = {}) {
-      for(const k of KEYS) {
-        $q(`#pe-${k}`).value = S[k];
-        const t = $q(`#pe-${k}-t`);
-        if(!(k in patch) || document.activeElement !== t) t.value = String(S[k]);
-      }
+    // `typing` is the id of a text box the user is editing, left alone so the cursor doesn't jump
+    function update(typing = null) {
+      const put = (id, v) => { $q(`#${id}`).value = v; const t = $q(`#${id}-t`); if(t.id !== typing || document.activeElement !== t) t.value = String(v); };
+      put("pe-vz", S.vz); put("pe-vy", S.vy);
+      S.segs.forEach((s, k) => { put(`pe-s${k}-a`, s.a); put(`pe-s${k}-b`, s.b); put(`pe-s${k}-n`, s.n); });
+      const code = encode();
+      if(document.activeElement !== codeEl) { codeEl.value = code; codeEl.classList.remove("bad"); }
       draw();
-      history.replaceState(null, "", "#" + new URLSearchParams(Object.fromEntries(KEYS.map(k => [k, S[k]]))));
+      try { history.replaceState(null, "", "#" + code); } catch {}
     }
-    const h = new URLSearchParams(location.hash.slice(1));
-    for(const k of KEYS) if(h.has(k) && isFinite(+h.get(k))) S[k] = isN(k) ? Math.max(0, Math.round(+h.get(k))) : +h.get(k);
-    const ro = new ResizeObserver(() => update()); ro.observe(fieldCv); ro.observe(pitchCv);
+    try { if(location.hash.length > 1) Object.assign(S, decode(location.hash)); } catch {}
+    renderSegs();
+    want = fitBox(simulate());   // open fitted to the trajectory
+    const ro = new ResizeObserver(() => draw()); ro.observe(fieldCv); ro.observe(pitchCv);
+    update();
+    if(document.fonts) document.fonts.ready.then(draw);
   })();
   </script>
 </div>
