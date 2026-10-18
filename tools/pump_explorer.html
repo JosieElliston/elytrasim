@@ -43,7 +43,8 @@
   #pump canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 3px; }
   #pump #pp-field { cursor: crosshair; touch-action: none; }
   #pump #pp-zoom { cursor: move; touch-action: none; }
-  #pump .readout { font: 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--fg); white-space: pre-wrap; min-height: 1.4em; }
+  /* one line, so hovering never moves the pitch strip */
+  #pump .readout { font: 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--fg); white-space: pre; overflow: hidden; text-overflow: ellipsis; min-height: 1.4em; }
   #pump .busy { color: var(--muted); font: 12px var(--mono); min-height: 1.4em; }
   @media (max-width: 860px) {
     html, body { height: auto; }
@@ -210,6 +211,13 @@
     try { Object.assign(S, JSON.parse(localStorage.getItem("pump-blur-2") || "{}")); } catch(e) {}
     if(!(S.map < maps.length)) S.map = 0;
     let M = null, policy = null, cyc = null, rawA = null, flight = null;
+    // the hovered tick: an index into the flight's states, 0 being v0; tick i flies pitch P[i-1] from state i-1 to i
+    let hover = null;
+    const HOT = "#ffffff";
+    function ring(ctx, x, y) {
+      ctx.lineWidth = 4; ctx.strokeStyle = T.bg; ctx.beginPath(); ctx.arc(x, y, 7, 0, 2*Math.PI); ctx.stroke();
+      ctx.lineWidth = 2; ctx.strokeStyle = HOT; ctx.beginPath(); ctx.arc(x, y, 7, 0, 2*Math.PI); ctx.stroke();
+    }
 
     // ---- drawing ----
     function setup(canvas) {
@@ -299,7 +307,11 @@
       ctx.save(); ctx.beginPath(); ctx.rect(m.l, m.t, bw, bh); ctx.clip();
       ctx.fillStyle = T.bg; ctx.fillRect(m.l, m.t, bw, bh);
       ctx.imageSmoothingEnabled = false;
-      if(zoom) { const [im, iw, ih] = exactImage(xr[0], yr[1], sc, bw, bh, 2); ctx.drawImage(im, m.l, m.t, iw, ih); }
+      if(zoom) {
+        const key = [S.map, S.sigma, xr, yr, bw, bh].join();
+        if(zcache.key !== key) zcache = {key, im: exactImage(xr[0], yr[1], sc, bw, bh, 2)};
+        const [im, iw, ih] = zcache.im; ctx.drawImage(im, m.l, m.t, iw, ih);
+      }
       else ctx.drawImage(image, X(-mp.dv/2), Y(mp.vy0 + (mp.ny-0.5)*mp.dv), mp.nz*mp.dv*sc, mp.ny*mp.dv*sc);
       ctx.restore();
       axes(ctx, X, Y, xr, yr, m, bw, bh, zoom ? 5 : 7, "vz (b/t)", "vy (b/t)", w, h);
@@ -322,8 +334,10 @@
       }
       arrow(ctx, X(F.VZ[0]), Y(F.VY[0]), F.P[0]);
       endMarks(ctx, [X(F.VZ[0]), Y(F.VY[0])], [X(F.VZ[F.n]), Y(F.VY[F.n])]);
+      if(hover !== null) ring(ctx, X(F.VZ[hover]), Y(F.VY[hover]));
       if(!zoom) {
-        const z = zoomWant();
+        // the region the zoom actually shows: its request widened to its panel's aspect
+        const z = zgeom ? zgeom.view : zoomWant();
         ctx.strokeStyle = T.fly; ctx.lineWidth = 1.2; ctx.setLineDash([4, 3]);
         ctx.strokeRect(X(z.x[0]), Y(z.y[1]), (z.x[1]-z.x[0])*sc, (z.y[1]-z.y[0])*sc); ctx.setLineDash([]);
       }
@@ -339,13 +353,14 @@
         ctx.fillStyle = T.muted; ctx.textAlign = "left";
         for(const p of [-89, -45, 0, 45, 89]) ctx.fillText(String(p), sx+sw+3, m.t + (p+LIMIT)/(2*LIMIT)*(bh-1) + 4);
       }
-      return {sc, Xi: px => xr[0] + (px-m.l)/sc, Yi: py => yr[1] - (py-m.t)/sc};
+      return {sc, X, Y, view: {x: xr, y: yr}, Xi: px => xr[0] + (px-m.l)/sc, Yi: py => yr[1] - (py-m.t)/sc};
     }
-    let image = null, fgeom = null, zgeom = null;
+    let image = null, fgeom = null, zgeom = null, pgeom = null, tgeom = null, zcache = {key: null};
     // The zoom centers on the pointer while it is over the main plane, and on v0 otherwise.
     let hoverV = null;
     const zoomWant = () => { const c = hoverV || {vz: S.vz, vy: S.vy}; return {x: [c.vz - S.zhw, c.vz + S.zhw], y: [c.vy - S.zhw, c.vy + S.zhw]}; };
     function drawField() { fgeom = drawPlane($q("#pp-field"), {x: [-0.05, 3.0], y: [-1.15, 2.1]}, false) || fgeom; }
+    // Draw the zoom before the main plane, which boxes the zoom's extent.
     function drawZoom() { zgeom = drawPlane($q("#pp-zoom"), zoomWant(), true) || zgeom; }
 
     function drawPath() {
@@ -364,13 +379,16 @@
       ctx.strokeStyle = ZERO; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(m.l, Y(0)); ctx.lineTo(m.l+bw, Y(0)); ctx.stroke(); ctx.setLineDash([]);
       fadedLine(ctx, F.n, i => [X(F.Z[i]), Y(F.Y[i])], T.fly, 1.8);
       endMarks(ctx, [X(0), Y(0)], [X(F.Z[F.n]), Y(F.Y[F.n])]);
+      if(hover !== null) ring(ctx, X(F.Z[hover]), Y(F.Y[hover]));
       ctx.restore();
+      pgeom = {X, Y};
     }
 
     function drawPitch() {
       const [ctx, w, h] = setup($q("#pp-pitch")), m = {l: 44, r: 12, t: 8, b: 30}, F = flight, N = F.n;
       const bw = w-m.l-m.r, bh = h-m.t-m.b; if(bw <= 0 || bh <= 0) return;
       const X = t => m.l + t/N*bw, Y = p => m.t + (p+90)/180*bh;   // −90 (nose up) at the top
+      tgeom = {Xi: px => (px - m.l)/bw*N, inside: (px, py) => px >= m.l && px <= m.l+bw && py >= m.t && py <= m.t+bh};
       ctx.fillStyle = T.muted; ctx.strokeStyle = GRID; ctx.lineWidth = 1;
       for(let p=-90;p<=90;p+=30) { ctx.beginPath(); ctx.moveTo(m.l, Y(p)); ctx.lineTo(m.l+bw, Y(p)); ctx.stroke(); ctx.textAlign = "right"; ctx.fillText(String(p), m.l-4, Y(p)+4); }
       const ts = Math.max(1, niceStep(N, 8));
@@ -378,6 +396,10 @@
       ctx.textAlign = "center"; ctx.fillText("tick", m.l+bw/2, h-3);
       ctx.save(); ctx.translate(11, m.t+bh/2); ctx.rotate(-Math.PI/2); ctx.fillText("pitch (°)", 0, 0); ctx.restore();
       ctx.strokeStyle = ZERO; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(m.l, Y(0)); ctx.lineTo(m.l+bw, Y(0)); ctx.stroke(); ctx.setLineDash([]);
+      if(hover !== null && hover > 0) {
+        ctx.fillStyle = "rgba(255,255,255,.14)"; ctx.fillRect(X(hover-1), m.t, Math.max(1, X(hover) - X(hover-1)), bh);
+        ctx.strokeStyle = HOT; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(X(hover), m.t); ctx.lineTo(X(hover), m.t+bh); ctx.stroke();
+      }
       // tick i applies its pitch over [i-1, i]; a riser joins each tick to the one before
       ctx.strokeStyle = T.fly; ctx.lineWidth = N > 800 ? 1.2 : 1.8;
       for(let i=1;i<=N;i++) {
@@ -432,7 +454,10 @@
     }
     function renderFlight() {
       const F = flight, d = F.TE[F.n] - F.TE[0];
-      $q("#pp-fly").textContent = `${F.n} ticks from v0   ΔTE ${d.toFixed(2)} blocks   ΔTE/n ${(d/F.n*20).toFixed(3)} b/s   climb ${F.Y[F.n].toFixed(1)}, distance ${F.Z[F.n].toFixed(0)} blocks`;
+      const h = hover;
+      $q("#pp-fly").textContent = h === null
+        ? `${F.n} ticks from v0   ΔTE ${d.toFixed(2)} blocks   ΔTE/n ${(d/F.n*20).toFixed(3)} b/s   climb ${F.Y[F.n].toFixed(1)}, distance ${F.Z[F.n].toFixed(0)} blocks`
+        : `tick ${h}${h ? `  pitch ${F.P[h-1].toFixed(2)}°` : ""}  v (${F.VZ[h].toFixed(4)}, ${F.VY[h].toFixed(4)}) b/t  ΔTE ${(F.TE[h]-F.TE[0]).toFixed(2)}  y ${F.Y[h].toFixed(1)}  z ${F.Z[h].toFixed(1)}`;
     }
 
     // ---- the trade-off curve, filled in the background one σ at a time ----
@@ -463,7 +488,7 @@
       sel.value = S.map;
       for(const k in pairs) { $q(`#pp-${k}`).value = S[k]; $q(`#pp-${k}-t`).value = S[k].toFixed(pairs[k][2]); }
     }
-    function refly() { flight = fly(policy, [S.vy, S.vz], S.n); renderFlight(); drawField(); drawZoom(); drawPath(); drawPitch(); }
+    function refly() { flight = fly(policy, [S.vy, S.vz], S.n); if(hover !== null && hover > S.n) hover = null; renderFlight(); drawZoom(); drawField(); drawPath(); drawPitch(); }
     // σ or the solution changed: re-blur, re-read the limit cycle, re-fly.
     function rebuild(mapChanged) {
       const mp = maps[S.map];
@@ -500,11 +525,11 @@
     fieldCv.addEventListener("pointermove", e => {
       if(fgeom) { const r = fieldCv.getBoundingClientRect(); hoverV = {vz: fgeom.Xi(e.clientX - r.left), vy: fgeom.Yi(e.clientY - r.top)}; }
       if(dragging) place(e);
-      else { cancelAnimationFrame(hoverPend); hoverPend = requestAnimationFrame(() => { drawField(); drawZoom(); }); }
+      else { cancelAnimationFrame(hoverPend); hoverPend = requestAnimationFrame(() => { drawZoom(); drawField(); }); }
     });
-    fieldCv.addEventListener("pointerleave", () => { if(dragging) return; hoverV = null; cancelAnimationFrame(hoverPend); hoverPend = requestAnimationFrame(() => { drawField(); drawZoom(); }); });
-    fieldCv.addEventListener("wheel", e => { e.preventDefault(); S.zhw = Math.min(1.5, Math.max(0.004, S.zhw*Math.exp(e.deltaY*0.0015))); drawField(); drawZoom(); save(); }, {passive: false});
-    fieldCv.addEventListener("pointerup", e => { dragging = false; const r = fieldCv.getBoundingClientRect(); if(e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) { hoverV = null; drawField(); drawZoom(); } });
+    fieldCv.addEventListener("pointerleave", () => { if(dragging) return; hoverV = null; cancelAnimationFrame(hoverPend); hoverPend = requestAnimationFrame(() => { drawZoom(); drawField(); }); });
+    fieldCv.addEventListener("wheel", e => { e.preventDefault(); S.zhw = Math.min(1.5, Math.max(0.004, S.zhw*Math.exp(e.deltaY*0.0015))); drawZoom(); drawField(); save(); }, {passive: false});
+    fieldCv.addEventListener("pointerup", e => { dragging = false; const r = fieldCv.getBoundingClientRect(); if(e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) { hoverV = null; drawZoom(); drawField(); } });
     fieldCv.addEventListener("pointercancel", () => { dragging = false; });
     // A drag in the zoom pans it: the plane moves with the pointer, and v0, the zoom's center, moves against it.
     const zoomCv = $q("#pp-zoom");
@@ -524,7 +549,36 @@
       if(zdrag && zgeom) { drawZoom(); zdrag = {x: e.clientX, y: e.clientY, vz: S.vz, vy: S.vy, sc: zgeom.sc}; }
       scheduleFly();
     }, {passive: false});
-    addEventListener("resize", () => { if(flight) { drawField(); drawZoom(); drawPath(); drawPitch(); drawTrade(); } });
+    // ---- hover: the tick under the pointer, highlighted everywhere it is drawn ----
+    let hovPend = 0;
+    function setHover(i) {
+      if(i === hover) return;
+      hover = i;
+      cancelAnimationFrame(hovPend);
+      hovPend = requestAnimationFrame(() => { renderFlight(); drawZoom(); drawField(); drawPath(); drawPitch(); });
+    }
+    // the state nearest the pointer on a plane, within `reach` CSS pixels
+    function nearest(geom, xs, ys, px, py, reach) {
+      if(!geom || !flight) return null;
+      let best = null, bd = reach;
+      for(let i=0;i<=flight.n;i++) { const d = Math.hypot(geom.X(xs[i]) - px, geom.Y(ys[i]) - py); if(d < bd) { bd = d; best = i; } }
+      return best;
+    }
+    const local = (cv, e) => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+    fieldCv.addEventListener("pointermove", e => { if(!dragging) setHover(nearest(fgeom, flight.VZ, flight.VY, ...local(fieldCv, e), 8)); });
+    fieldCv.addEventListener("pointerleave", () => setHover(null));
+    zoomCv.addEventListener("pointermove", e => { if(!zdrag) setHover(nearest(zgeom, flight.VZ, flight.VY, ...local(zoomCv, e), 10)); });
+    zoomCv.addEventListener("pointerleave", () => setHover(null));
+    const pathCv = $q("#pp-path"), pitchCv = $q("#pp-pitch");
+    pathCv.addEventListener("pointermove", e => setHover(nearest(pgeom, flight.Z, flight.Y, ...local(pathCv, e), 12)));
+    pathCv.addEventListener("pointerleave", () => setHover(null));
+    pitchCv.addEventListener("pointermove", e => {
+      const [px, py] = local(pitchCv, e);
+      if(!tgeom || !tgeom.inside(px, py)) return setHover(null);
+      setHover(Math.min(flight.n, Math.max(1, Math.ceil(tgeom.Xi(px)))));
+    });
+    pitchCv.addEventListener("pointerleave", () => setHover(null));
+    addEventListener("resize", () => { if(flight) { drawZoom(); drawField(); drawPath(); drawPitch(); drawTrade(); } });
     syncControls();
     rebuild(true);
   })();
