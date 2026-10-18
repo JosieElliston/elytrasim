@@ -1,0 +1,532 @@
+<!-- Template: tools/build_pump_explorer.py embeds pumpdp's policy maps at the DATA marker and writes the page to runs/pumpdp/. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pump policy blur</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: pitch_explorer's. Controls, the limit cycle's numbers and the trade-off curve in a left rail; the velocity plane beside the flight path, and the pitch strip below. Same single dark look. */
+  :root {
+    color-scheme: dark;
+    --bg: #14171a; --panel: #1b1f24; --line: #4a525c; --rule: #2b3138;
+    --fg: #e6e9ed; --muted: #b9c0c9;
+    --rate: #ffd166; --chat: #ff9e7a; --fly: #56d4c0;
+    --ui: "Atkinson Hyperlegible", system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  html, body { height: 100%; margin: 0; background: var(--bg); }
+  #pump { box-sizing: border-box; color: var(--fg); background: var(--bg); font: 14px var(--ui); padding-block: 14px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); height: 100%; overflow: hidden; display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 0 14px; }
+  #pump * { box-sizing: border-box; }
+  #pump h1 { font-size: 20px; font-weight: 700; margin: 0 0 4px; text-wrap: balance; }
+  #pump .sub, #pump .caption { color: var(--muted); margin: 0; font-size: 12.5px; line-height: 1.45; }
+  #pump .left { min-width: 0; min-height: 0; overflow-y: auto; padding-right: 4px; display: flex; flex-direction: column; gap: 12px; }
+  #pump .row { display: grid; grid-template-columns: 62px minmax(60px, 1fr) 66px; gap: 8px; align-items: center; font-size: 13px; }
+  #pump .row.wide { grid-template-columns: 62px minmax(0, 1fr); }
+  #pump label { color: var(--muted); }
+  #pump input[type="range"] { width: 100%; accent-color: var(--fly); }
+  #pump input[type="text"] { width: 100%; background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; font: 12px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+  #pump select { width: 100%; background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 4px; font: 13px var(--ui); }
+  #pump :focus-visible { outline: 2px solid var(--fly); outline-offset: 1px; }
+  #pump table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  #pump td { padding: 2px 0; border-bottom: 1px solid var(--rule); vertical-align: baseline; }
+  #pump td:first-child { color: var(--muted); padding-right: 8px; }
+  #pump td.v { text-align: right; font: 12px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #pump .eyebrow { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; }
+  #pump .right { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+  #pump .top { flex: 1 1 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 8px; }
+  #pump .stack { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+  #pump .box { position: relative; min-height: 0; }
+  #pump .box.pitch { flex: 0 0 30%; }
+  #pump .box.trade { height: 180px; }
+  #pump canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 3px; }
+  #pump #pp-field { cursor: crosshair; touch-action: none; }
+  #pump #pp-zoom { cursor: move; touch-action: none; }
+  #pump .readout { font: 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--fg); white-space: pre-wrap; min-height: 1.4em; }
+  #pump .busy { color: var(--muted); font: 12px var(--mono); min-height: 1.4em; }
+  @media (max-width: 860px) {
+    html, body { height: auto; }
+    /* the title, then the charts, then the controls and numbers */
+    #pump { height: auto; overflow: visible; display: flex; flex-direction: column; gap: 12px; }
+    #pump .left { display: contents; }
+    #pump .left > * { order: 2; }
+    #pump .left > .intro { order: 0; }
+    #pump .right { order: 1; }
+    #pump .top { display: flex; flex-direction: column; flex: none; gap: 6px; }
+    #pump .box.field { aspect-ratio: 1.05; max-width: 100%; }
+    #pump .stack { display: flex; flex-direction: column; gap: 6px; }
+    #pump .box.path { height: 220px; }
+    #pump .box.zoom { aspect-ratio: 1.2; max-width: 100%; }
+    #pump .box.pitch { flex: none; height: 220px; }
+  }
+</style>
+<div id="pump">
+  <div class="left">
+    <div class="intro">
+      <h1>Pump policy blur</h1>
+      <p class="sub">A velocity → pitch policy solved on a grid by pumpdp. Blurring its map with a Gaussian of width σ keeps it a function of velocity alone and trades climb rate for less chatter. Drag on the velocity plane to start a flight anywhere; the zoom below the flight path follows the pointer over the plane and sits on v0 otherwise. Drag in the zoom to pan it, which moves v0 with its center; the wheel over either plane sets the zoom's size. Pitch is Minecraft's: negative is nose up, drawn up.</p>
+    </div>
+    <div class="row wide"><label for="pp-map">solution</label><select id="pp-map"></select></div>
+    <div class="row"><label for="pp-sigma">blur σ</label><input id="pp-sigma" type="range" min="0" max="0.1" step="0.0025"><input id="pp-sigma-t" type="text" aria-label="blur sigma in blocks per tick"></div>
+    <div class="row"><label for="pp-vz">v<sub>z</sub>0</label><input id="pp-vz" type="range" min="0" max="3.5" step="0.001"><input id="pp-vz-t" type="text" aria-label="starting vz"></div>
+    <div class="row"><label for="pp-vy">v<sub>y</sub>0</label><input id="pp-vy" type="range" min="-2" max="2.6" step="0.001"><input id="pp-vy-t" type="text" aria-label="starting vy"></div>
+    <div class="row"><label for="pp-n">ticks</label><input id="pp-n" type="range" min="50" max="2000" step="10"><input id="pp-n-t" type="text" aria-label="ticks flown"></div>
+    <div>
+      <p class="eyebrow">this blur's limit cycle</p>
+      <table><tbody id="pp-read"></tbody></table>
+    </div>
+    <div>
+      <p class="eyebrow">rate and chatter against σ</p>
+      <div class="box trade"><canvas id="pp-trade" aria-label="climb rate and pitch reversals against blur width"></canvas></div>
+      <div class="busy" id="pp-busy"></div>
+    </div>
+    <p class="caption">Velocities are in blocks per tick; σ too (× 20 for blocks per second). The solution grid is 0.01 b/t unless named fine (0.005). The limit cycle is read off 30000 ticks flown from the hand-flown reference's v0, after a 10000-tick settle, over whole laps; a lap runs snap to snap, the snap being the first tick pitch reaches −80. Rate is total-energy gain per second. Reversals count ticks where pitch turns around by more than 2° each way. ΔTE is altitude plus |v|²/2g, with g = 0.08 b/t².</p>
+  </div>
+  <div class="right">
+    <div class="top">
+      <div class="box field"><canvas id="pp-field" aria-label="blurred policy pitch over velocity, with the flight from v0"></canvas></div>
+      <div class="stack">
+        <div class="box path"><canvas id="pp-path" aria-label="flight path, height against distance"></canvas></div>
+        <div class="box zoom"><canvas id="pp-zoom" aria-label="the policy around v0, magnified, with each tick of the flight"></canvas></div>
+      </div>
+    </div>
+    <div class="readout" id="pp-fly"></div>
+    <div class="box pitch"><canvas id="pp-pitch" aria-label="pitch against tick for the flight from v0"></canvas></div>
+  </div>
+  <script>
+  (() => {
+    const DATA = /*@DATA@*/null;
+    const root = document.querySelector("#pump"), $q = s => root.querySelector(s);
+    const css = getComputedStyle(document.documentElement);
+    const T = Object.fromEntries(["bg", "panel", "line", "rule", "fg", "muted", "rate", "chat", "fly", "mono"].map(k => [k, css.getPropertyValue(`--${k}`).trim()]));
+    const G = 0.08, DRAG_Y = Math.fround(0.98), DRAG_Z = Math.fround(0.99), LIMIT = 89;
+    const FLY = 30000, SETTLE = 10000, SNAP = -80, FADE = 0.06;   // FADE: opacity of the flight's last tick
+    const V0REF = DATA.v0;
+
+    // One tick at yaw 0, v_z >= 0: pumpdp's and field's f64 kernel.
+    function step(vy, vz, p) {
+      const lean = p*Math.PI/180, c = Math.cos(lean), lift = c*c, hor = Math.abs(vz);
+      vy += G*(-1 + lift*0.75);
+      if(vy < 0) { const k = vy*-0.1*lift; vy += k; vz += k; }
+      if(lean < 0) { const u = hor*-Math.sin(lean)*0.04; vy += u*3.2; vz -= u; }
+      vz += (hor - vz)*0.1;
+      return [vy*DRAG_Y, vz*DRAG_Z];
+    }
+    const ke = (vy, vz) => (vy*vy + vz*vz)/(2*G);
+
+    // ---- maps ----
+    function decode(m) {
+      const bin = atob(m.pitch), b = new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++) b[i] = bin.charCodeAt(i);
+      const q = new Int16Array(b.buffer), f = new Float32Array(q.length);
+      for(let i=0;i<q.length;i++) f[i] = q[i]/4;
+      return f;
+    }
+    // Separable Gaussian, edges clamped, cut at 4σ: scipy's gaussian_filter(mode="nearest").
+    function blur(m, sigma) {
+      const src = m.raw, s = sigma/m.dv, {ny, nz} = m;
+      if(s <= 0) return src;
+      const r = Math.floor(4*s + 0.5), k = new Float64Array(2*r + 1);
+      let sum = 0;
+      for(let i=-r;i<=r;i++) sum += k[i+r] = Math.exp(-0.5*(i/s)**2);
+      for(let i=0;i<k.length;i++) k[i] /= sum;
+      const tmp = new Float32Array(src.length), out = new Float32Array(src.length);
+      for(let j=0;j<ny;j++) {
+        const o = j*nz;
+        for(let x=0;x<nz;x++) {
+          let a = 0;
+          for(let i=-r;i<=r;i++) { const xx = x+i < 0 ? 0 : x+i >= nz ? nz-1 : x+i; a += k[i+r]*src[o+xx]; }
+          tmp[o+x] = a;
+        }
+      }
+      for(let j=0;j<ny;j++) for(let x=0;x<nz;x++) {
+        let a = 0;
+        for(let i=-r;i<=r;i++) { const jj = j+i < 0 ? 0 : j+i >= ny ? ny-1 : j+i; a += k[i+r]*tmp[jj*nz+x]; }
+        out[j*nz+x] = a;
+      }
+      return out;
+    }
+    function reader(m, M) {
+      const {vy0, dv, ny, nz} = m;
+      return (vy, vz) => {
+        let x = (vy - vy0)/dv, y = vz/dv;
+        x = Math.min(Math.max(x, 0), ny-1); y = Math.min(Math.max(y, 0), nz-1);
+        const j = Math.min(Math.floor(x), ny-2), k = Math.min(Math.floor(y), nz-2), a = x-j, b = y-k, n = j*nz+k;
+        const lo = M[n]*(1-b) + M[n+1]*b, hi = M[n+nz]*(1-b) + M[n+nz+1]*b;
+        return Math.min(LIMIT, Math.max(-LIMIT, lo*(1-a) + hi*a));
+      };
+    }
+
+    // ---- a flight and what to read off it ----
+    function fly(policy, v0, n) {
+      const P = new Float64Array(n), VY = new Float64Array(n+1), VZ = new Float64Array(n+1), Y = new Float64Array(n+1), Z = new Float64Array(n+1), TE = new Float64Array(n+1);
+      let [vy, vz] = v0, y = 0, z = 0;
+      VY[0] = vy; VZ[0] = vz; TE[0] = ke(vy, vz);
+      for(let t=0;t<n;t++) {
+        const p = policy(vy, vz); P[t] = p;
+        [vy, vz] = step(vy, vz, p); y += vy; z += vz;   // vanilla moves by the new velocity
+        VY[t+1] = vy; VZ[t+1] = vz; Y[t+1] = y; Z[t+1] = z; TE[t+1] = y + ke(vy, vz);
+      }
+      return {P, VY, VZ, Y, Z, TE, n};
+    }
+    function analyze(F) {
+      const {P, VY, VZ, TE, n} = F, snaps = [];
+      for(let t=SETTLE;t<n;t++) if(P[t] <= SNAP && P[t-1] > SNAP) snaps.push(t);
+      let rev = 0, tv = 0, maxd = 0;
+      for(let t=SETTLE+1;t<n;t++) {
+        const d = P[t]-P[t-1]; tv += Math.abs(d); maxd = Math.max(maxd, Math.abs(d));
+        if(t+1 < n) { const e = P[t+1]-P[t]; if(d*e < 0 && Math.abs(d) > 2 && Math.abs(e) > 2) rev++; }
+      }
+      const per = (n - SETTLE)/1000;
+      let close = null;
+      for(let k=1;k<=3000;k++) if(Math.hypot(VY[n]-VY[n-k], VZ[n]-VZ[n-k]) < 1e-5) { close = k; break; }
+      const A = {snaps, rev: rev/per, tv: tv/per, maxd, close};
+      if(snaps.length >= 2) {
+        const a = snaps[0], b = snaps[snaps.length-1], lens = [], climb = [];
+        A.rate = (TE[b] - TE[a])/(b - a)*20;
+        for(let i=1;i<snaps.length;i++) { lens.push(snaps[i]-snaps[i-1]); climb.push(TE[snaps[i]]-TE[snaps[i-1]]); }
+        A.lens = [Math.min(...lens), Math.max(...lens)]; A.climb = [Math.min(...climb), Math.max(...climb)];
+        // largest difference from the first kept lap, by phase within the lap
+        const L = A.lens[0], s0 = snaps[0], D = [];
+        for(let ph=-15; ph<L-15; ph++) {
+          let m = 0;
+          for(let i=1;i<snaps.length-1;i++) m = Math.max(m, Math.abs(P[snaps[i]+ph] - P[s0+ph]));
+          D.push(m);
+        }
+        D.sort((x, y) => x-y);
+        A.spread = [D[Math.floor(D.length/2)], D[Math.floor(D.length*0.9)], D[D.length-1]];
+      } else {
+        A.rate = (TE[n] - TE[SETTLE])/(n - SETTLE)*20;
+      }
+      return A;
+    }
+
+    // ---- state ----
+    const maps = DATA.maps;
+    maps.forEach(m => { m.raw = decode(m); m.trade = new Map(); });
+    // zhw: the zoom's half-width, b/t, along its shorter side
+    const S = {map: 0, sigma: 0.04, vz: V0REF[1], vy: V0REF[0], n: 500, zhw: 0.1};
+    try { Object.assign(S, JSON.parse(localStorage.getItem("pump-blur-2") || "{}")); } catch(e) {}
+    if(!(S.map < maps.length)) S.map = 0;
+    let M = null, policy = null, cyc = null, rawA = null, flight = null;
+
+    // ---- drawing ----
+    function setup(canvas) {
+      const rect = canvas.getBoundingClientRect(), dpr = Math.min(devicePixelRatio || 1, 2);
+      canvas.width = Math.max(1, Math.round(rect.width*dpr)); canvas.height = Math.max(1, Math.round(rect.height*dpr));
+      const ctx = canvas.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = T.panel; ctx.fillRect(0, 0, rect.width, rect.height);
+      ctx.font = `11px ${T.mono}`;
+      return [ctx, rect.width, rect.height];
+    }
+    function niceStep(span, n) { const raw = span/n, mag = 10**Math.floor(Math.log10(raw)), q = raw/mag; return (q<=1?1:q<=2?2:q<=2.5?2.5:q<=5?5:10)*mag; }
+    const dec = v => Math.max(0, Math.ceil(-Math.log10(v) - 1e-9));
+    const GRID = "rgba(185,192,201,.14)", ZERO = "rgba(230,233,237,.35)";
+    // Opacity of tick i of n: 1 at the start, FADE at the end.
+    const fade = (i, n) => 1 - (1 - FADE)*i/n;
+    function axes(ctx, X, Y, xr, yr, m, bw, bh, n, xl, yl, w, h) {
+      ctx.strokeStyle = GRID; ctx.lineWidth = 1; ctx.fillStyle = T.muted;
+      const st = niceStep(Math.max(xr[1]-xr[0], yr[1]-yr[0]), n), dg = dec(st);
+      for(let x=Math.ceil(xr[0]/st)*st; x<=xr[1]; x+=st) { ctx.beginPath(); ctx.moveTo(X(x), m.t); ctx.lineTo(X(x), m.t+bh); ctx.stroke(); ctx.textAlign = "center"; ctx.fillText(x.toFixed(dg), X(x), m.t+bh+13); }
+      for(let y=Math.ceil(yr[0]/st)*st; y<=yr[1]; y+=st) { ctx.beginPath(); ctx.moveTo(m.l, Y(y)); ctx.lineTo(m.l+bw, Y(y)); ctx.stroke(); ctx.textAlign = "right"; ctx.fillText(y.toFixed(dg), m.l-4, Y(y)+4); }
+      ctx.textAlign = "center"; ctx.fillText(xl, m.l+bw/2, h-3);
+      ctx.save(); ctx.translate(11, m.t+bh/2); ctx.rotate(-Math.PI/2); ctx.fillText(yl, 0, 0); ctx.restore();
+    }
+    // A polyline in tick order, each step at the opacity of its later tick.
+    function fadedLine(ctx, n, at, color, lw) {
+      ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.lineCap = "round";
+      for(let i=1;i<=n;i++) {
+        const [x0, y0] = at(i-1), [x1, y1] = at(i);
+        ctx.globalAlpha = fade(i, n); ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+    function endMarks(ctx, s, e) {
+      ctx.strokeStyle = T.fg; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.5;
+      ctx.beginPath(); ctx.rect(e[0]-4, e[1]-4, 8, 8); ctx.stroke(); ctx.globalAlpha = 1;
+      ctx.beginPath(); ctx.arc(s[0], s[1], 5, 0, Math.PI*2); ctx.fillStyle = "#ffffff"; ctx.fill(); ctx.strokeStyle = T.bg; ctx.stroke();
+    }
+
+    // Diverging pitch ramp through the field's near-black zero, the field figures' pair.
+    const UP = [0x6f, 0x8c, 0xff], MID = [0x0c, 0x0d, 0x10], DOWN = [0xe0, 0x60, 0x7e];
+    function mapImage(m, M) {
+      const {ny, nz} = m, img = new ImageData(nz, ny);
+      for(let j=0;j<ny;j++) for(let k=0;k<nz;k++) {
+        const p = M[j*nz+k], f = Math.min(1, Math.abs(p)/LIMIT), c = p < 0 ? UP : DOWN, o = ((ny-1-j)*nz + k)*4;
+        for(let i=0;i<3;i++) img.data[o+i] = MID[i] + (c[i]-MID[i])*f;
+        img.data[o+3] = 255;
+      }
+      const cv = document.createElement("canvas"); cv.width = nz; cv.height = ny; cv.getContext("2d").putImageData(img, 0, 0);
+      return cv;
+    }
+    // The look direction at a velocity: pitch θ points along (vz, vy) = (cos θ, −sin θ), so nose up points up.
+    function arrow(ctx, ax, ay, pitch) {
+      const lean = pitch*Math.PI/180, dx = Math.cos(lean), dy = Math.sin(lean), L = 34, hd = 8;
+      // the shaft stops inside the head's base, so its cap can't poke out past the tip
+      const tx = ax + dx*L, ty = ay + dy*L, bx = tx - dx*hd*0.6, by = ty - dy*hd*0.6;
+      ctx.lineCap = "butt";
+      ctx.strokeStyle = T.bg; ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+      ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(tx - hd*(dx*0.9 - dy*0.5), ty - hd*(dy*0.9 + dx*0.5));
+      ctx.lineTo(tx - hd*(dx*0.9 + dy*0.5), ty - hd*(dy*0.9 - dx*0.5)); ctx.closePath();
+      ctx.fillStyle = "#ffffff"; ctx.fill(); ctx.strokeStyle = T.bg; ctx.lineWidth = 1; ctx.stroke();
+      ctx.fillStyle = T.fg; ctx.textAlign = dx >= 0 ? "left" : "right";
+      ctx.fillText(`${pitch.toFixed(1)}°`, tx + (dx >= 0 ? 6 : -6), ty + (dy >= 0 ? 12 : -4));
+    }
+    const pitchRGB = p => { const f = Math.min(1, Math.abs(p)/LIMIT), c = p < 0 ? UP : DOWN; return c.map((v, j) => MID[j] + (v-MID[j])*f); };
+    // The policy as flown, bilinear between nodes, sampled every `px` CSS pixels.
+    function exactImage(X0, Y1, sc, bw, bh, px) {
+      const nw = Math.max(1, Math.ceil(bw/px)), nh = Math.max(1, Math.ceil(bh/px)), img = new ImageData(nw, nh);
+      for(let j=0;j<nh;j++) for(let i=0;i<nw;i++) {
+        const c = pitchRGB(policy(Y1 - (j+0.5)*px/sc, X0 + (i+0.5)*px/sc)), o = (j*nw + i)*4;
+        img.data[o] = c[0]; img.data[o+1] = c[1]; img.data[o+2] = c[2]; img.data[o+3] = 255;
+      }
+      const cv = document.createElement("canvas"); cv.width = nw; cv.height = nh; cv.getContext("2d").putImageData(img, 0, 0);
+      return [cv, nw*px, nh*px];
+    }
+    // A velocity plane: `want` fitted at equal aspect. The main one draws the node map, a pitch scale
+    // and the zoom's box; the zoom draws the policy as flown, the nodes, and every tick as a dot.
+    function drawPlane(cv, want, zoom) {
+      const [ctx, w, h] = setup(cv), m = {l: 44, r: zoom ? 10 : 50, t: 8, b: 30}, mp = maps[S.map];
+      const bw = w-m.l-m.r, bh = h-m.t-m.b; if(bw <= 0 || bh <= 0) return null;
+      const sc = Math.min(bw/(want.x[1]-want.x[0]), bh/(want.y[1]-want.y[0]));
+      const cx = (want.x[0]+want.x[1])/2, cy = (want.y[0]+want.y[1])/2;
+      const xr = [cx-bw/sc/2, cx+bw/sc/2], yr = [cy-bh/sc/2, cy+bh/sc/2];
+      const X = x => m.l + (x-xr[0])*sc, Y = y => m.t + (yr[1]-y)*sc;
+      ctx.save(); ctx.beginPath(); ctx.rect(m.l, m.t, bw, bh); ctx.clip();
+      ctx.fillStyle = T.bg; ctx.fillRect(m.l, m.t, bw, bh);
+      ctx.imageSmoothingEnabled = false;
+      if(zoom) { const [im, iw, ih] = exactImage(xr[0], yr[1], sc, bw, bh, 2); ctx.drawImage(im, m.l, m.t, iw, ih); }
+      else ctx.drawImage(image, X(-mp.dv/2), Y(mp.vy0 + (mp.ny-0.5)*mp.dv), mp.nz*mp.dv*sc, mp.ny*mp.dv*sc);
+      ctx.restore();
+      axes(ctx, X, Y, xr, yr, m, bw, bh, zoom ? 5 : 7, "vz (b/t)", "vy (b/t)", w, h);
+      ctx.save(); ctx.beginPath(); ctx.rect(m.l, m.t, bw, bh); ctx.clip();
+      ctx.strokeStyle = ZERO; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(m.l, Y(0)); ctx.lineTo(m.l+bw, Y(0)); ctx.stroke(); ctx.setLineDash([]);
+      // the grid's nodes, once they are far enough apart to see
+      if(zoom && mp.dv*sc >= 6) {
+        ctx.fillStyle = "rgba(230,233,237,.45)";
+        const r = mp.dv*sc >= 14 ? 1.6 : 1;
+        for(let k=Math.max(0, Math.ceil(xr[0]/mp.dv)); k*mp.dv <= xr[1] && k < mp.nz; k++)
+          for(let j=Math.max(0, Math.ceil((yr[0]-mp.vy0)/mp.dv)); mp.vy0 + j*mp.dv <= yr[1] && j < mp.ny; j++)
+            ctx.fillRect(X(k*mp.dv)-r/2, Y(mp.vy0 + j*mp.dv)-r/2, r, r);
+      }
+      const F = flight;
+      fadedLine(ctx, F.n, i => [X(F.VZ[i]), Y(F.VY[i])], "#ffffff", zoom ? 1.2 : 1.6);
+      if(zoom) {
+        ctx.fillStyle = "#ffffff";
+        for(let i=1;i<=F.n;i++) { ctx.globalAlpha = fade(i, F.n); ctx.beginPath(); ctx.arc(X(F.VZ[i]), Y(F.VY[i]), 2.4, 0, 2*Math.PI); ctx.fill(); }
+        ctx.globalAlpha = 1;
+      }
+      arrow(ctx, X(F.VZ[0]), Y(F.VY[0]), F.P[0]);
+      endMarks(ctx, [X(F.VZ[0]), Y(F.VY[0])], [X(F.VZ[F.n]), Y(F.VY[F.n])]);
+      if(!zoom) {
+        const z = zoomWant();
+        ctx.strokeStyle = T.fly; ctx.lineWidth = 1.2; ctx.setLineDash([4, 3]);
+        ctx.strokeRect(X(z.x[0]), Y(z.y[1]), (z.x[1]-z.x[0])*sc, (z.y[1]-z.y[0])*sc); ctx.setLineDash([]);
+      }
+      ctx.restore();
+      if(zoom) {
+        ctx.fillStyle = T.muted; ctx.textAlign = "right";
+        const lab = `±${S.zhw < 0.1 ? S.zhw.toFixed(3) : S.zhw.toFixed(2)} b/t`, tw = ctx.measureText(lab).width;
+        ctx.fillStyle = "rgba(20,23,26,.75)"; ctx.fillRect(m.l+bw-tw-10, m.t+2, tw+8, 15);
+        ctx.fillStyle = T.fg; ctx.fillText(lab, m.l+bw-6, m.t+13);
+      } else {
+        const sx = w-m.r+12, sw = 9;
+        for(let i=0;i<bh;i++) { ctx.fillStyle = `rgb(${pitchRGB(-LIMIT + 2*LIMIT*i/(bh-1)).map(Math.round).join(",")})`; ctx.fillRect(sx, m.t+i, sw, 1.5); }
+        ctx.fillStyle = T.muted; ctx.textAlign = "left";
+        for(const p of [-89, -45, 0, 45, 89]) ctx.fillText(String(p), sx+sw+3, m.t + (p+LIMIT)/(2*LIMIT)*(bh-1) + 4);
+      }
+      return {sc, Xi: px => xr[0] + (px-m.l)/sc, Yi: py => yr[1] - (py-m.t)/sc};
+    }
+    let image = null, fgeom = null, zgeom = null;
+    // The zoom centers on the pointer while it is over the main plane, and on v0 otherwise.
+    let hoverV = null;
+    const zoomWant = () => { const c = hoverV || {vz: S.vz, vy: S.vy}; return {x: [c.vz - S.zhw, c.vz + S.zhw], y: [c.vy - S.zhw, c.vy + S.zhw]}; };
+    function drawField() { fgeom = drawPlane($q("#pp-field"), {x: [-0.05, 3.0], y: [-1.15, 2.1]}, false) || fgeom; }
+    function drawZoom() { zgeom = drawPlane($q("#pp-zoom"), zoomWant(), true) || zgeom; }
+
+    function drawPath() {
+      const [ctx, w, h] = setup($q("#pp-path")), m = {l: 44, r: 10, t: 8, b: 30}, F = flight;
+      const bw = w-m.l-m.r, bh = h-m.t-m.b; if(bw <= 0 || bh <= 0) return;
+      let z0 = Infinity, z1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for(let i=0;i<=F.n;i++) { z0 = Math.min(z0, F.Z[i]); z1 = Math.max(z1, F.Z[i]); y0 = Math.min(y0, F.Y[i]); y1 = Math.max(y1, F.Y[i]); }
+      const pad = Math.max(z1-z0, y1-y0, 4)*0.05;
+      z0 -= pad; z1 += pad; y0 -= pad; y1 += pad;
+      // one block is the same length on both axes
+      const sc = Math.min(bw/(z1-z0), bh/(y1-y0)), cz = (z0+z1)/2, cy = (y0+y1)/2;
+      const zr = [cz-bw/sc/2, cz+bw/sc/2], yr = [cy-bh/sc/2, cy+bh/sc/2];
+      const X = z => m.l + (z-zr[0])*sc, Y = y => m.t + (yr[1]-y)*sc;
+      axes(ctx, X, Y, zr, yr, m, bw, bh, 8, "z (blocks)", "y (blocks)", w, h);
+      ctx.save(); ctx.beginPath(); ctx.rect(m.l, m.t, bw, bh); ctx.clip();
+      ctx.strokeStyle = ZERO; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(m.l, Y(0)); ctx.lineTo(m.l+bw, Y(0)); ctx.stroke(); ctx.setLineDash([]);
+      fadedLine(ctx, F.n, i => [X(F.Z[i]), Y(F.Y[i])], T.fly, 1.8);
+      endMarks(ctx, [X(0), Y(0)], [X(F.Z[F.n]), Y(F.Y[F.n])]);
+      ctx.restore();
+    }
+
+    function drawPitch() {
+      const [ctx, w, h] = setup($q("#pp-pitch")), m = {l: 44, r: 12, t: 8, b: 30}, F = flight, N = F.n;
+      const bw = w-m.l-m.r, bh = h-m.t-m.b; if(bw <= 0 || bh <= 0) return;
+      const X = t => m.l + t/N*bw, Y = p => m.t + (p+90)/180*bh;   // −90 (nose up) at the top
+      ctx.fillStyle = T.muted; ctx.strokeStyle = GRID; ctx.lineWidth = 1;
+      for(let p=-90;p<=90;p+=30) { ctx.beginPath(); ctx.moveTo(m.l, Y(p)); ctx.lineTo(m.l+bw, Y(p)); ctx.stroke(); ctx.textAlign = "right"; ctx.fillText(String(p), m.l-4, Y(p)+4); }
+      const ts = Math.max(1, niceStep(N, 8));
+      for(let t=0;t<=N+1e-9;t+=ts) { ctx.beginPath(); ctx.moveTo(X(t), m.t); ctx.lineTo(X(t), m.t+bh); ctx.stroke(); ctx.textAlign = "center"; ctx.fillText(String(Math.round(t)), X(t), m.t+bh+13); }
+      ctx.textAlign = "center"; ctx.fillText("tick", m.l+bw/2, h-3);
+      ctx.save(); ctx.translate(11, m.t+bh/2); ctx.rotate(-Math.PI/2); ctx.fillText("pitch (°)", 0, 0); ctx.restore();
+      ctx.strokeStyle = ZERO; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(m.l, Y(0)); ctx.lineTo(m.l+bw, Y(0)); ctx.stroke(); ctx.setLineDash([]);
+      // tick i applies its pitch over [i-1, i]; a riser joins each tick to the one before
+      ctx.strokeStyle = T.fly; ctx.lineWidth = N > 800 ? 1.2 : 1.8;
+      for(let i=1;i<=N;i++) {
+        const p = F.P[i-1], q = i > 1 ? F.P[i-2] : p;
+        ctx.globalAlpha = fade(i, N); ctx.beginPath(); ctx.moveTo(X(i-1), Y(q)); ctx.lineTo(X(i-1), Y(p)); ctx.lineTo(X(i), Y(p)); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = T.line; ctx.strokeRect(m.l, m.t, bw, bh);
+    }
+
+    function drawTrade() {
+      const [ctx, w, h] = setup($q("#pp-trade")), m = {l: 40, r: 40, t: 10, b: 24}, mp = maps[S.map];
+      const bw = w-m.l-m.r, bh = h-m.t-m.b; if(bw <= 0 || bh <= 0) return;
+      const pts = [...mp.trade.entries()].sort((a, b) => a[0]-b[0]);
+      const rates = pts.map(p => p[1].rate).filter(r => r > 0.5);
+      const rlo = rates.length ? Math.floor(Math.min(...rates)*20)/20 - 0.05 : 1.2, rhi = rates.length ? Math.ceil(Math.max(...rates)*20)/20 : 1.6;
+      const cs = niceStep(Math.max(50, ...pts.map(p => p[1].rev)), 4), chi = Math.ceil(Math.max(50, ...pts.map(p => p[1].rev))/cs)*cs;
+      const X = s => m.l + s/0.1*bw, Yr = r => m.t + (rhi-r)/(rhi-rlo)*bh, Yc = c => m.t + (1 - c/chi)*bh;
+      ctx.strokeStyle = GRID; ctx.lineWidth = 1;
+      for(let s=0; s<=0.1+1e-9; s+=0.02) { ctx.beginPath(); ctx.moveTo(X(s), m.t); ctx.lineTo(X(s), m.t+bh); ctx.stroke(); ctx.fillStyle = T.muted; ctx.textAlign = "center"; ctx.fillText(s.toFixed(2), X(s), m.t+bh+14); }
+      const rs = niceStep(rhi-rlo, 4);
+      for(let r=Math.ceil(rlo/rs)*rs; r<=rhi+1e-9; r+=rs) { ctx.beginPath(); ctx.moveTo(m.l, Yr(r)); ctx.lineTo(m.l+bw, Yr(r)); ctx.stroke(); ctx.fillStyle = T.rate; ctx.textAlign = "right"; ctx.fillText(r.toFixed(2), m.l-4, Yr(r)+4); }
+      for(let c=0; c<=chi; c+=cs) { ctx.fillStyle = T.chat; ctx.textAlign = "left"; ctx.fillText(String(c), m.l+bw+4, Yc(c)+4); }
+      ctx.save(); ctx.beginPath(); ctx.rect(m.l, m.t, bw, bh); ctx.clip();
+      const series = (Y, get, color) => {
+        ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.beginPath();
+        pts.forEach(([s, a], i) => i ? ctx.lineTo(X(s), Y(get(a))) : ctx.moveTo(X(s), Y(get(a)))); ctx.stroke();
+        ctx.fillStyle = color; pts.forEach(([s, a]) => { ctx.beginPath(); ctx.arc(X(s), Y(get(a)), 2.2, 0, 2*Math.PI); ctx.fill(); });
+      };
+      series(Yc, a => a.rev, T.chat); series(Yr, a => a.rate, T.rate);
+      ctx.strokeStyle = T.fg; ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(X(S.sigma), m.t); ctx.lineTo(X(S.sigma), m.t+bh); ctx.stroke(); ctx.setLineDash([]);
+      ctx.restore();
+      ctx.textAlign = "left"; ctx.fillStyle = T.rate; ctx.fillText("rate b/s", m.l+4, m.t+11);
+      ctx.textAlign = "right"; ctx.fillStyle = T.chat; ctx.fillText("reversals /1000 t", m.l+bw-4, m.t+11);
+    }
+
+    function renderCycle() {
+      const A = cyc, R = rawA, f = (v, d) => v == null ? "–" : v.toFixed(d);
+      const rows = [
+        ["climb rate", `${f(A.rate, 3)} b/s`],
+        ["vs unblurred", A.rate != null && R.rate ? `${A.rate - R.rate >= 0 ? "+" : ""}${f((A.rate/R.rate - 1)*100, 1)}%` : "–"],
+        ["reversals > 2°", `${f(A.rev, 0)} per 1000 t`],
+        ["pitch travel", `${f(A.tv, 0)}° per 1000 t`],
+        ["largest tick step", `${f(A.maxd, 1)}°`],
+        ["lap length", A.lens ? (A.lens[0] === A.lens[1] ? `${A.lens[0]} t` : `${A.lens[0]}–${A.lens[1]} t`) : "no laps"],
+        ["climb per lap", A.climb ? `${f(A.climb[0], 2)}–${f(A.climb[1], 2)} blocks` : "–"],
+        ["lap-to-lap pitch", A.spread ? `${f(A.spread[0], 2)} / ${f(A.spread[1], 2)} / ${f(A.spread[2], 1)}°` : "–"],
+        ["closes", A.close ? `every ${A.close} t` : "no, quasi-periodic"],
+      ];
+      $q("#pp-read").innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td class="v">${v}</td></tr>`).join("");
+      $q("#pp-read").children[7].title = "median / 90th percentile / max over the lap's ticks of the largest difference from the first lap kept";
+    }
+    function renderFlight() {
+      const F = flight, d = F.TE[F.n] - F.TE[0];
+      $q("#pp-fly").textContent = `${F.n} ticks from v0   ΔTE ${d.toFixed(2)} blocks   ΔTE/n ${(d/F.n*20).toFixed(3)} b/s   climb ${F.Y[F.n].toFixed(1)}, distance ${F.Z[F.n].toFixed(0)} blocks`;
+    }
+
+    // ---- the trade-off curve, filled in the background one σ at a time ----
+    let tradeJob = 0;
+    function fillTrade() {
+      const job = ++tradeJob, mp = maps[S.map], sigmas = [];
+      for(let i=0;i<=40;i++) { const s = +(i*0.0025).toFixed(4); if(!mp.trade.has(s)) sigmas.push(s); }
+      // the coarse points first, so the curve's shape shows early
+      sigmas.sort((a, b) => (Math.round(a/0.0025) % 4 ? 1 : 0) - (Math.round(b/0.0025) % 4 ? 1 : 0) || a-b);
+      const next = () => {
+        if(job !== tradeJob) return;
+        if(!sigmas.length) { $q("#pp-busy").textContent = ""; return; }
+        const s = sigmas.shift();
+        mp.trade.set(s, analyze(fly(reader(mp, blur(mp, s)), V0REF, FLY)));
+        $q("#pp-busy").textContent = `computing σ curve: ${mp.trade.size}/41`;
+        drawTrade();
+        setTimeout(next, 0);
+      };
+      setTimeout(next, 30);
+    }
+
+    // ---- controls ----
+    const sel = $q("#pp-map");
+    sel.innerHTML = maps.map((m, i) => `<option value="${i}">${m.label}</option>`).join("");
+    const pairs = {sigma: [0, 0.2, 4], vz: [0, 3.5, 3], vy: [-2, 2.6, 3], n: [50, 5000, 0]};
+    function save() { try { localStorage.setItem("pump-blur-2", JSON.stringify(S)); } catch(e) {} }
+    function syncControls() {
+      sel.value = S.map;
+      for(const k in pairs) { $q(`#pp-${k}`).value = S[k]; $q(`#pp-${k}-t`).value = S[k].toFixed(pairs[k][2]); }
+    }
+    function refly() { flight = fly(policy, [S.vy, S.vz], S.n); renderFlight(); drawField(); drawZoom(); drawPath(); drawPitch(); }
+    // σ or the solution changed: re-blur, re-read the limit cycle, re-fly.
+    function rebuild(mapChanged) {
+      const mp = maps[S.map];
+      if(mapChanged || !rawA) { rawA = mp.trade.get(0) || analyze(fly(reader(mp, mp.raw), V0REF, FLY)); mp.trade.set(0, rawA); }
+      M = blur(mp, S.sigma); policy = reader(mp, M); image = mapImage(mp, M);
+      cyc = S.sigma === 0 ? rawA : analyze(fly(policy, V0REF, FLY));
+      mp.trade.set(+S.sigma.toFixed(4), cyc);
+      renderCycle(); drawTrade(); refly(); save();
+      if(mapChanged) fillTrade();
+    }
+    let pend = 0, pendMap = false;
+    function schedule(mapChanged) { pendMap ||= mapChanged; cancelAnimationFrame(pend); pend = requestAnimationFrame(() => { const m = pendMap; pendMap = false; rebuild(m); }); }
+    let flyPend = 0;
+    function scheduleFly() { cancelAnimationFrame(flyPend); flyPend = requestAnimationFrame(() => { refly(); syncControls(); save(); }); }
+    sel.addEventListener("change", () => { S.map = +sel.value; rawA = null; schedule(true); });
+    for(const k in pairs) {
+      const r = $q(`#pp-${k}`), t = $q(`#pp-${k}-t`), [lo, hi, dg] = pairs[k];
+      const set = v => { S[k] = k === "n" ? Math.round(v) : v; k === "sigma" ? schedule(false) : scheduleFly(); };
+      r.addEventListener("input", () => { set(+r.value); t.value = (+r.value).toFixed(dg); });
+      t.addEventListener("change", () => { const v = parseFloat(t.value); if(v >= lo && v <= hi) set(v); t.value = S[k].toFixed(dg); });
+    }
+    // drag anywhere on the velocity plane to put v0 there
+    const fieldCv = $q("#pp-field");
+    const place = e => {
+      if(!fgeom) return;
+      const r = fieldCv.getBoundingClientRect(), mp = maps[S.map];
+      S.vz = Math.min(Math.max(fgeom.Xi(e.clientX - r.left), 0), (mp.nz-1)*mp.dv);
+      S.vy = Math.min(Math.max(fgeom.Yi(e.clientY - r.top), mp.vy0), mp.vy0 + (mp.ny-1)*mp.dv);
+      scheduleFly();
+    };
+    let dragging = false;
+    fieldCv.addEventListener("pointerdown", e => { dragging = true; fieldCv.setPointerCapture(e.pointerId); place(e); });
+    let hoverPend = 0;
+    fieldCv.addEventListener("pointermove", e => {
+      if(fgeom) { const r = fieldCv.getBoundingClientRect(); hoverV = {vz: fgeom.Xi(e.clientX - r.left), vy: fgeom.Yi(e.clientY - r.top)}; }
+      if(dragging) place(e);
+      else { cancelAnimationFrame(hoverPend); hoverPend = requestAnimationFrame(() => { drawField(); drawZoom(); }); }
+    });
+    fieldCv.addEventListener("pointerleave", () => { if(dragging) return; hoverV = null; cancelAnimationFrame(hoverPend); hoverPend = requestAnimationFrame(() => { drawField(); drawZoom(); }); });
+    fieldCv.addEventListener("wheel", e => { e.preventDefault(); S.zhw = Math.min(1.5, Math.max(0.004, S.zhw*Math.exp(e.deltaY*0.0015))); drawField(); drawZoom(); save(); }, {passive: false});
+    fieldCv.addEventListener("pointerup", e => { dragging = false; const r = fieldCv.getBoundingClientRect(); if(e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) { hoverV = null; drawField(); drawZoom(); } });
+    fieldCv.addEventListener("pointercancel", () => { dragging = false; });
+    // A drag in the zoom pans it: the plane moves with the pointer, and v0, the zoom's center, moves against it.
+    const zoomCv = $q("#pp-zoom");
+    let zdrag = null;
+    const clampV = () => { const mp = maps[S.map]; S.vz = Math.min(Math.max(S.vz, 0), (mp.nz-1)*mp.dv); S.vy = Math.min(Math.max(S.vy, mp.vy0), mp.vy0 + (mp.ny-1)*mp.dv); };
+    zoomCv.addEventListener("pointerdown", e => { if(!zgeom) return; zdrag = {x: e.clientX, y: e.clientY, vz: S.vz, vy: S.vy, sc: zgeom.sc}; zoomCv.setPointerCapture(e.pointerId); });
+    zoomCv.addEventListener("pointermove", e => {
+      if(!zdrag) return;
+      S.vz = zdrag.vz - (e.clientX - zdrag.x)/zdrag.sc; S.vy = zdrag.vy + (e.clientY - zdrag.y)/zdrag.sc;
+      clampV(); scheduleFly();
+    });
+    zoomCv.addEventListener("pointerup", () => { zdrag = null; });
+    zoomCv.addEventListener("pointercancel", () => { zdrag = null; });
+    zoomCv.addEventListener("wheel", e => {
+      e.preventDefault();
+      S.zhw = Math.min(1.5, Math.max(0.004, S.zhw*Math.exp(e.deltaY*0.0015)));
+      if(zdrag && zgeom) { drawZoom(); zdrag = {x: e.clientX, y: e.clientY, vz: S.vz, vy: S.vy, sc: zgeom.sc}; }
+      scheduleFly();
+    }, {passive: false});
+    addEventListener("resize", () => { if(flight) { drawField(); drawZoom(); drawPath(); drawPitch(); drawTrade(); } });
+    syncControls();
+    rebuild(true);
+  })();
+  </script>
+</div>
