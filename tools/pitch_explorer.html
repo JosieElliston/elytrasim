@@ -16,7 +16,7 @@
     --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   html, body { height: 100%; margin: 0; background: var(--bg); }
-  #pitch-explorer { box-sizing: border-box; color: var(--fg); background: var(--bg); font: 14px var(--ui); padding-block: 14px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); height: 100%; overflow: hidden; display: grid; grid-template-columns: 350px minmax(0, 1fr); gap: 18px; }
+  #pitch-explorer { box-sizing: border-box; color: var(--fg); background: var(--bg); font: 14px var(--ui); padding-block: 14px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); height: 100%; overflow: hidden; display: grid; grid-template-columns: 350px 8px minmax(0, 1fr); gap: 0 5px; }
   #pitch-explorer * { box-sizing: border-box; }
   #pitch-explorer [hidden] { display: none !important; }
   #pitch-explorer h1 { font-size: 20px; font-weight: 700; margin: 0 0 4px; text-wrap: balance; }
@@ -42,11 +42,23 @@
   #pitch-explorer .code-row input[type="text"] { text-align: left; }
   #pitch-explorer .right { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
   #pitch-explorer .box { position: relative; min-height: 0; }
-  #pitch-explorer .box.field { flex: 1 1 0; }
+  #pitch-explorer .top { flex: 1 1 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+  /* drag handles between panels; the line shows on hover and while dragging */
+  #pitch-explorer .gutter { position: relative; touch-action: none; }
+  #pitch-explorer .gutter::after { content: ""; position: absolute; border-radius: 2px; background: var(--line); opacity: 0; transition: opacity .12s; }
+  #pitch-explorer .gutter:hover::after, #pitch-explorer .gutter.on::after { opacity: 1; }
+  #pitch-explorer .gutter.col { cursor: col-resize; }
+  #pitch-explorer .gutter.col::after { left: 3px; width: 2px; top: 0; bottom: 0; }
+  #pitch-explorer .gutter.row { cursor: row-resize; min-height: 8px; }
+  #pitch-explorer .gutter.row::after { top: 3px; height: 2px; left: 0; right: 0; }
+  #pitch-explorer .right > .gutter.row { margin: -4px 0; flex: none; height: 8px; }
+  @media (prefers-reduced-motion: reduce) { #pitch-explorer .gutter::after { transition: none; } }
   #pitch-explorer .box.pitch { flex: 0 0 28%; }
   #pitch-explorer canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: var(--panel); border: 1px solid var(--line); }
   #pitch-explorer #pe-field { cursor: move; touch-action: none; }
   #pitch-explorer #pe-pitch { touch-action: none; }
+  #pitch-explorer .bar label { color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 5px; }
+  #pitch-explorer select { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; font: 13px var(--ui); }
   #pitch-explorer .bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   #pitch-explorer .readout { flex: 1; min-width: 0; font: 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--fg); white-space: pre-wrap; }
   #pitch-explorer .readout.idle { color: var(--muted); font-family: var(--ui); }
@@ -54,7 +66,10 @@
     html, body { height: auto; }
     #pitch-explorer { height: auto; overflow: visible; grid-template-columns: minmax(0, 1fr); }
     #pitch-explorer .left { overflow: visible; padding-right: 0; }
+    #pitch-explorer .top { flex: none; display: flex; flex-direction: column; gap: 6px; }
+    #pitch-explorer .gutter { display: none; }
     #pitch-explorer .box.field { flex: none; aspect-ratio: 1.15; max-width: 100%; }
+    #pitch-explorer .box.path { flex: none; height: 220px; }
     #pitch-explorer .box.pitch { flex: none; height: 220px; }
   }
 </style>
@@ -74,13 +89,20 @@
     </div>
     <p class="caption">Velocities are in blocks per tick. ΔTE is the gain in total energy since v0, in blocks: altitude plus |v|²/2g, with g = 0.08 b/t². ΔTE/n is that gain per tick.</p>
   </div>
+  <div class="gutter col" id="pe-g-rail" title="drag to resize, double-click to reset"></div>
   <div class="right">
-    <div class="box field"><canvas id="pe-field" aria-label="velocity plane with the schedule's trajectory over the one-tick energy field"></canvas></div>
+    <div class="top" id="pe-top" data-path="beside">
+      <div class="box field"><canvas id="pe-field" aria-label="velocity plane with the schedule's trajectory over the one-tick energy field"></canvas></div>
+      <div class="gutter col" id="pe-g-split" title="drag to resize, double-click to reset"></div>
+      <div class="box path" id="pe-path-box"><canvas id="pe-path" aria-label="flight path, height against distance"></canvas></div>
+    </div>
     <div class="bar">
       <div class="readout" id="pe-read"></div>
+      <label for="pe-path-at">flight path <select id="pe-path-at"><option value="beside">beside</option><option value="below">below</option><option value="off">off</option></select></label>
       <button id="pe-fit">fit view</button><button id="pe-reset">reset view</button>
     </div>
     <p class="caption">Drag v0 to move it, drag elsewhere to pan; wheel zooms.</p>
+    <div class="gutter row" id="pe-g-pitch" title="drag to resize, double-click to reset"></div>
     <div class="box pitch"><canvas id="pe-pitch" aria-label="pitch against tick, editable by dragging"></canvas></div>
     <p class="caption">Drag a segment's line or its dots to change its pitch, and the triangles on the tick axis to move where segments switch or end. Pitch snaps to 1°; hold shift for 0.1°.</p>
   </div>
@@ -120,14 +142,14 @@
 
     const segPitch = (s, j) => s.n <= 1 ? s.a : s.a + (s.b - s.a)*j/(s.n - 1);
     function simulate() {
-      const pts = [{t: 0, vy: S.vy, vz: S.vz, y: 0, p: null, k: null}];
-      let vy = S.vy, vz = S.vz, y = 0, t = 0;
+      const pts = [{t: 0, vy: S.vy, vz: S.vz, y: 0, z: 0, p: null, k: null}];
+      let vy = S.vy, vz = S.vz, y = 0, z = 0, t = 0;
       S.segs.forEach((s, k) => {
         for(let j=0;j<s.n;j++) {
           const p = segPitch(s, j);
           [vy, vz] = step(vy, vz, p);
-          y += vy;   // vanilla moves after the velocity update, so the climb is the new vy
-          pts.push({t: ++t, vy, vz, y, p, k});
+          y += vy; z += vz;   // vanilla moves after the velocity update, so each tick moves by the new velocity
+          pts.push({t: ++t, vy, vz, y, z, p, k});
         }
       });
       return pts;
@@ -251,6 +273,116 @@
       ctx.textAlign = "left"; ctx.fillStyle = T.muted;
       ctx.fillText("● v0   ○ switch   □ end", m.l + 6, m.t + 14);
     }
+
+    // ---- flight path: height against distance, true scale, always fitted ----
+    const pathCv = $q("#pe-path"), topEl = $q("#pe-top");
+    let ggeom = null;
+    function drawPath(pts) {
+      if(topEl.dataset.path === "off") { ggeom = null; return; }
+      const [ctx, w, h] = setup(pathCv), m = {l: 44, r: 10, t: 10, b: 30};
+      const bw = w - m.l - m.r, bh = h - m.t - m.b;
+      if(bw <= 0 || bh <= 0) return;
+      const zs = pts.map(q => q.z), ys = pts.map(q => q.y);
+      let z0 = Math.min(...zs), z1 = Math.max(...zs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+      const pad = Math.max(z1 - z0, y1 - y0, 4)*0.05;
+      z0 -= pad; z1 += pad; y0 -= pad; y1 += pad;
+      // one block is the same length on both axes; center the path in whichever axis has room
+      const sc = Math.min(bw/(z1 - z0), bh/(y1 - y0));
+      const cz = (z0 + z1)/2, cy = (y0 + y1)/2;
+      const zr = [cz - bw/sc/2, cz + bw/sc/2], yr = [cy - bh/sc/2, cy + bh/sc/2];
+      const X = z => m.l + (z - zr[0])*sc, Y = y => m.t + (yr[1] - y)*sc;
+      ggeom = {X, Y};
+      ctx.fillStyle = T.muted; ctx.strokeStyle = GRID; ctx.lineWidth = 1;
+      const stp = niceStep(Math.max(zr[1] - zr[0], yr[1] - yr[0]), 8), dg = Math.max(0, Math.ceil(-Math.log10(stp) - 1e-9));
+      for(let z = Math.ceil(zr[0]/stp)*stp; z <= zr[1]; z += stp) {
+        ctx.beginPath(); ctx.moveTo(X(z), m.t); ctx.lineTo(X(z), m.t + bh); ctx.stroke();
+        ctx.textAlign = "center"; ctx.fillText(z.toFixed(dg), X(z), m.t + bh + 13);
+      }
+      for(let y = Math.ceil(yr[0]/stp)*stp; y <= yr[1]; y += stp) {
+        ctx.beginPath(); ctx.moveTo(m.l, Y(y)); ctx.lineTo(m.l + bw, Y(y)); ctx.stroke();
+        ctx.textAlign = "right"; ctx.fillText(y.toFixed(dg), m.l - 4, Y(y) + 4);
+      }
+      ctx.textAlign = "center"; ctx.fillText("z (blocks)", m.l + bw/2, h - 3);
+      ctx.save(); ctx.translate(11, m.t + bh/2); ctx.rotate(-Math.PI/2); ctx.fillText("y (blocks)", 0, 0); ctx.restore();
+      ctx.save(); ctx.beginPath(); ctx.rect(m.l, m.t, bw, bh); ctx.clip();
+      // the starting altitude
+      ctx.strokeStyle = ZERO; ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(m.l, Y(0)); ctx.lineTo(m.l + bw, Y(0)); ctx.stroke(); ctx.setLineDash([]);
+      ctx.lineWidth = 1.8;
+      for(let i=1;i<pts.length;i++) {
+        ctx.strokeStyle = color(pts[i].k);
+        ctx.beginPath(); ctx.moveTo(X(pts[i-1].z), Y(pts[i-1].y)); ctx.lineTo(X(pts[i].z), Y(pts[i].y)); ctx.stroke();
+      }
+      ctx.strokeStyle = T.fg; ctx.lineWidth = 1.5;
+      for(let i=1;i<pts.length-1;i++) if(pts[i].k !== pts[i+1].k) { ctx.beginPath(); ctx.arc(X(pts[i].z), Y(pts[i].y), 4.5, 0, Math.PI*2); ctx.stroke(); }
+      const last = pts[pts.length-1]; if(pts.length > 1) { ctx.beginPath(); ctx.rect(X(last.z)-4, Y(last.y)-4, 8, 8); ctx.stroke(); }
+      ctx.beginPath(); ctx.arc(X(0), Y(0), 5, 0, Math.PI*2); ctx.fillStyle = "#ffffff"; ctx.fill(); ctx.strokeStyle = T.bg; ctx.stroke();
+      if(hover !== null && pts[hover]) { const q = pts[hover]; ctx.beginPath(); ctx.arc(X(q.z), Y(q.y), 7, 0, Math.PI*2); ctx.strokeStyle = HOT; ctx.lineWidth = 2; ctx.stroke(); }
+      ctx.restore();
+    }
+    pathCv.addEventListener("pointermove", e => {
+      if(!ggeom) return;
+      const r = pathCv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+      let best = null, bd = 12;
+      lastPts.forEach((q, i) => { const d = Math.hypot(ggeom.X(q.z) - px, ggeom.Y(q.y) - py); if(d < bd) { bd = d; best = i; } });
+      setHover(best);
+    });
+    pathCv.addEventListener("pointerleave", () => setHover(null));
+    const pathAt = $q("#pe-path-at");
+    // ---- panel sizes: the rail width in px, and the rest as fractions, remembered per viewer ----
+    const LAYOUT0 = {rail: 350, beside: 0.6, below: 0.7, pitch: 0.28};
+    let L = {...LAYOUT0};
+    try { const v = JSON.parse(localStorage.getItem("pe-layout")); if(v) for(const k in LAYOUT0) if(isFinite(v[k])) L[k] = +v[k]; } catch {}
+    const narrow = matchMedia("(max-width: 860px)");
+    const gSplit = $q("#pe-g-split"), pitchBox = $q(".box.pitch");
+    function applyLayout() {
+      const at = topEl.dataset.path;
+      gSplit.hidden = at === "off";
+      gSplit.classList.toggle("row", at === "below"); gSplit.classList.toggle("col", at !== "below");
+      if(narrow.matches) {   // stacked: the stylesheet decides, so drop anything set here
+        root.style.gridTemplateColumns = topEl.style.gridTemplateColumns = topEl.style.gridTemplateRows = pitchBox.style.flex = "";
+        return;
+      }
+      root.style.gridTemplateColumns = `${L.rail}px 8px minmax(0, 1fr)`;
+      const f = L[at] || 1, two = `minmax(0, ${f}fr) 8px minmax(0, ${1 - f}fr)`;
+      topEl.style.gridTemplateColumns = at === "beside" ? two : "minmax(0, 1fr)";
+      topEl.style.gridTemplateRows = at === "below" ? two : "minmax(0, 1fr)";
+      pitchBox.style.flex = `0 0 ${L.pitch*100}%`;
+    }
+    const saveLayout = () => { try { localStorage.setItem("pe-layout", JSON.stringify(L)); } catch {} };
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    function gutter(el, onMove, reset) {
+      el.addEventListener("pointerdown", e => {
+        e.preventDefault(); el.classList.add("on");
+        try { el.setPointerCapture(e.pointerId); } catch {}
+        const mv = ev => { onMove(ev); applyLayout(); };
+        const up = () => { el.classList.remove("on"); el.removeEventListener("pointermove", mv); el.removeEventListener("pointerup", up); el.removeEventListener("pointercancel", up); saveLayout(); };
+        el.addEventListener("pointermove", mv); el.addEventListener("pointerup", up); el.addEventListener("pointercancel", up);
+      });
+      el.addEventListener("dblclick", () => { reset(); applyLayout(); saveLayout(); });
+    }
+    gutter($q("#pe-g-rail"), e => {
+      const r = root.getBoundingClientRect(), padL = parseFloat(getComputedStyle(root).paddingLeft);
+      L.rail = Math.round(clamp(e.clientX - r.left - padL - 4, 260, r.width*0.5));
+    }, () => L.rail = LAYOUT0.rail);
+    gutter(gSplit, e => {
+      const r = topEl.getBoundingClientRect(), at = topEl.dataset.path;
+      L[at] = at === "below" ? clamp((e.clientY - r.top)/r.height, 0.25, 0.85) : clamp((e.clientX - r.left)/r.width, 0.2, 0.85);
+    }, () => { const at = topEl.dataset.path; L[at] = LAYOUT0[at]; });
+    gutter($q("#pe-g-pitch"), e => {
+      const r = $q(".right").getBoundingClientRect(), b = pitchBox.getBoundingClientRect();
+      L.pitch = clamp((b.bottom - e.clientY)/r.height, 0.12, 0.6);
+    }, () => L.pitch = LAYOUT0.pitch);
+    narrow.addEventListener("change", applyLayout);
+
+    function placePath(v) {
+      topEl.dataset.path = v; pathAt.value = v; $q("#pe-path-box").hidden = v === "off";
+      applyLayout();
+      try { localStorage.setItem("pe-path-at", v); } catch {}
+    }
+    pathAt.addEventListener("change", () => { placePath(pathAt.value); draw(); });
+    try { const v = localStorage.getItem("pe-path-at"); if(["below", "beside", "off"].includes(v)) placePath(v); } catch {}
+    applyLayout();
 
     // ---- pitch vs tick, which is also the schedule editor ----
     const pitchCv = $q("#pe-pitch");
@@ -521,7 +653,7 @@
     function draw() {
       const pts = lastPts = simulate();
       if(hover !== null && hover >= pts.length) hover = null;
-      drawField(pts); drawPitch(pts); renderRead(pts);
+      drawField(pts); drawPath(pts); drawPitch(pts); renderRead(pts);
     }
     // `typing` is the id of a text box the user is editing, left alone so the cursor doesn't jump
     function update(typing = null) {
@@ -536,7 +668,7 @@
     try { if(location.hash.length > 1) Object.assign(S, decode(location.hash)); } catch {}
     renderSegs();
     want = fitBox(simulate());   // open fitted to the trajectory
-    const ro = new ResizeObserver(() => draw()); ro.observe(fieldCv); ro.observe(pitchCv);
+    const ro = new ResizeObserver(() => draw()); ro.observe(fieldCv); ro.observe(pitchCv); ro.observe(pathCv);
     update();
     if(document.fonts) document.fonts.ready.then(draw);
   })();
