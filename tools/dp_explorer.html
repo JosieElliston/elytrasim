@@ -363,12 +363,30 @@
         const e = [fx(F.vz[F.p.length]), fy(F.vy[F.p.length])];
         c.strokeStyle = T.fg; c.lineWidth = 1.5; c.globalAlpha = 0.5; c.beginPath(); c.rect(e[0] - 4, e[1] - 4, 8, 8); c.stroke(); c.globalAlpha = 1;
       }
+      arrow(c, fx(st.vz0), fy(st.vy0), F && F.p.length ? F.p[0] : PS[argmax(M, st.vy0, st.vz0)]);
       c.beginPath(); c.arc(fx(st.vz0), fy(st.vy0), 5, 0, 7); c.fillStyle = "#ffffff"; c.fill(); c.strokeStyle = T.bg; c.lineWidth = 1.5; c.stroke();
       if(probe) for(const [w, col] of [[4, T.bg], [2, T.rate]]) { c.strokeStyle = col; c.lineWidth = w; c.beginPath(); c.arc(fx(probe[1]), fy(probe[0]), 7, 0, 7); c.stroke(); }
       c.restore(); fr.axes();
       drawMapKey(fr);
     }
     const FADE = 0.06, fade = (i, n) => 1 - (1 - FADE)*i/n;
+    // pump_explorer's: the look direction at v0. Pitch θ points along (vz, vy) = (cos θ, −sin θ), so nose up points up.
+    function arrow(ctx, ax, ay, pitch) {
+      const lean = pitch*Math.PI/180, dx = Math.cos(lean), dy = Math.sin(lean), L = 34, hd = 8;
+      // the shaft stops inside the head's base, so its cap can't poke out past the tip
+      const tx = ax + dx*L, ty = ay + dy*L, bx = tx - dx*hd*0.6, by = ty - dy*hd*0.6;
+      ctx.lineCap = "butt";
+      ctx.strokeStyle = T.bg; ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+      ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(tx - hd*(dx*0.9 - dy*0.5), ty - hd*(dy*0.9 + dx*0.5));
+      ctx.lineTo(tx - hd*(dx*0.9 + dy*0.5), ty - hd*(dy*0.9 - dx*0.5)); ctx.closePath();
+      ctx.fillStyle = "#ffffff"; ctx.fill(); ctx.strokeStyle = T.bg; ctx.lineWidth = 1; ctx.stroke();
+      ctx.font = `11px ${T.mono}`; ctx.textBaseline = "alphabetic";
+      ctx.fillStyle = T.fg; ctx.textAlign = dx >= 0 ? "left" : "right";
+      ctx.fillText(`${pitch.toFixed(1)}°`, tx + (dx >= 0 ? 6 : -6), ty + (dy >= 0 ? 12 : -4));
+    }
     // the map's key, in its right margin: a color bar for the layer, top to bottom
     function drawMapKey(fr) {
       const { c, W, m, H } = fr, x = W - m.r + 10, w = 9, top = m.t, bh = H - m.t - m.b;
