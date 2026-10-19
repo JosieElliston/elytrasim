@@ -1,0 +1,564 @@
+<!doctype html>
+<!-- Template: tools/build_dp_explorer.py embeds pumpdp's conv_curv value functions at the DATA marker and writes the page to runs/pumpdp/ablate/. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ablated DP explorer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  /* curv_explorer's look: controls and numbers in a left rail, the map and three curves on the right. */
+  :root {
+    color-scheme: dark;
+    --bg: #14171a; --panel: #1b1f24; --line: #4a525c; --rule: #2b3138;
+    --fg: #e6e9ed; --muted: #b9c0c9; --faint: #6b7480;
+    --rate: #ffd166; --chat: #ff9e7a; --fly: #56d4c0; --ke: #c3a6ff;
+    --ui: "Atkinson Hyperlegible", system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  html, body { height: 100%; margin: 0; background: var(--bg); }
+  #dx { box-sizing: border-box; color: var(--fg); background: var(--bg); font: 14px var(--ui); padding-block: 14px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); height: 100%; overflow: hidden; display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 0 14px; }
+  #dx * { box-sizing: border-box; }
+  #dx h1 { font-size: 20px; font-weight: 700; margin: 0 0 4px; text-wrap: balance; }
+  #dx .sub, #dx .caption { color: var(--muted); margin: 0; font-size: 12.5px; line-height: 1.45; }
+  #dx .left { min-width: 0; min-height: 0; overflow-y: auto; padding-right: 4px; display: flex; flex-direction: column; gap: 12px; }
+  #dx .row { display: grid; grid-template-columns: 62px minmax(60px, 1fr) 66px; gap: 8px; align-items: center; font-size: 13px; }
+  #dx .row.wide { grid-template-columns: 62px minmax(0, 1fr); }
+  #dx label { color: var(--muted); }
+  #dx input[type="range"] { width: 100%; accent-color: var(--fly); margin: 0; }
+  #dx output, #dx input[type="text"] { font: 12px var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+  #dx input[type="text"] { width: 100%; background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; }
+  #dx select, #dx button { width: 100%; background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 4px; font: 13px var(--ui); }
+  #dx button { cursor: pointer; }
+  #dx .check { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
+  #dx .check input { accent-color: var(--fly); margin: 0; }
+  #dx :focus-visible { outline: 2px solid var(--fly); outline-offset: 1px; }
+  #dx table { border-collapse: collapse; width: 100%; font-size: 12.5px; table-layout: fixed; }
+  #dx table th:first-child, #dx table td:first-child { width: 36%; }
+  #dx th { font-weight: 400; color: var(--muted); text-align: right; font-size: 11px; padding: 0 0 2px; }
+  #dx td { padding: 2px 0; border-bottom: 1px solid var(--rule); vertical-align: baseline; }
+  #dx td:first-child { color: var(--muted); padding-right: 8px; }
+  #dx td.v { text-align: right; font: 12px var(--mono); font-variant-numeric: tabular-nums; white-space: pre; padding-left: 8px; overflow: hidden; }
+  #dx td.v.f1 { color: var(--muted); }
+  #dx .eyebrow { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; }
+  #dx .key { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); }
+  #dx .key i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 4px; border-radius: 1px; }
+  #dx .key b { font: 400 11.5px var(--mono); color: var(--fg); font-variant-numeric: tabular-nums; white-space: pre; }
+  #dx #dx-lread { align-self: end; gap: 2px 10px; }
+  #dx .right { min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1.35fr) auto minmax(0, 1fr); gap: 4px 10px; }
+  #dx .box { position: relative; min-height: 0; }
+  #dx canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 3px; }
+  #dx #dx-map { cursor: grab; touch-action: none; }
+  #dx #dx-tr { cursor: col-resize; touch-action: pan-y; }
+  #dx .readout { font: 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--fg); white-space: pre; overflow: hidden; text-overflow: ellipsis; min-height: 1.4em; }
+  #dx .busy { color: var(--rate); }
+  @media (max-width: 900px) {
+    html, body { height: auto; }
+    #dx { height: auto; overflow: visible; display: flex; flex-direction: column; gap: 12px; }
+    #dx .left { display: contents; }
+    #dx .left > * { order: 2; }
+    #dx .left > .intro { order: 0; }
+    #dx .right { order: 1; display: flex; flex-direction: column; gap: 6px; }
+    #dx .box { height: 260px; }
+    #dx .box.mapbox { height: auto; aspect-ratio: 0.95; }
+    #dx .readout { white-space: pre-wrap; min-height: 2.8em; }
+  }
+</style>
+<div id="dx">
+  <div class="left">
+    <div class="intro">
+      <h1>Ablated DP explorer</h1>
+      <p class="sub">pumpdp's discounted DP (horizon 3000) solved under one of two ablations of the descent-to-forward conversion. <code>--conv-curv</code> f scales the conversion's lift² coefficient and holds it fixed at lift 0 and 1. <code>--conv-lift-exp</code> k raises the conversion's outer lift factor to lift<sup>k</sup>. f = k = 1 is the game. Both sliders run toward more conversion at interior pitches. Drag the white dot (v0) to move it and fly that DP's policy from it; drag anywhere else to pan the map. The wheel (or a pinch) zooms around the pointer. Hover the map or the pitch trace to probe Q there. Pitch is Minecraft's, so positive is nose down.</p>
+    </div>
+    <div>
+      <div class="row wide"><label for="dx-knob">ablation</label><select id="dx-knob">
+        <option value="f">f: conv_curv, scale the lift² coefficient</option>
+        <option value="k">k: conv_lift_exp, outer lift → lift^k</option>
+      </select></div>
+      <div class="row"><label for="dx-f" id="dx-f-l">f</label><input id="dx-f" type="range" min="0" step="1"><output id="dx-f-o"></output></div>
+      <div class="row wide"><span></span><span class="key" id="dx-fnote"></span></div>
+    </div>
+    <div class="row wide"><label for="dx-layer">map</label><select id="dx-layer">
+      <option value="pitch">policy pitch</option>
+      <option value="flip">flips: 0↔89 and back in 2 ticks</option>
+      <option value="gap">Q midpoint gap in lift (dive branch)</option>
+      <option value="dp">pitch − pitch in the game</option>
+    </select></div>
+    <div class="row wide"><label for="dx-zoom">zoom</label><button id="dx-zoom" type="button">reset to the whole cycle</button></div>
+    <div class="row"><label for="dx-n">ticks</label><input id="dx-n" type="range" min="50" max="3000" step="10"><output id="dx-n-o"></output></div>
+    <div class="row"><label for="dx-vz">v<sub>z</sub>0</label><input id="dx-vz" type="range" min="0" max="2.7" step="0.001"><input id="dx-vz-t" type="text" aria-label="v0's vz"></div>
+    <div class="row"><label for="dx-vy">v<sub>y</sub>0</label><input id="dx-vy" type="range" min="-1" max="2" step="0.001"><input id="dx-vy-t" type="text" aria-label="v0's vy"></div>
+    <label class="check"><input id="dx-ghost" type="checkbox"> also show the game (faded)</label>
+    <div class="row wide"><span></span><button id="dx-reset" type="button">v0 to (1.746, −0.563), off the cycle</button></div>
+    <div>
+      <p class="eyebrow" id="dx-ph">at the probe</p>
+      <table><thead><tr><th></th><th id="dx-fh">f</th><th>game</th></tr></thead><tbody id="dx-read"></tbody></table>
+    </div>
+    <div>
+      <p class="eyebrow">the run</p>
+      <table><thead><tr><th></th><th id="dx-fh2">f</th><th>game</th></tr></thead><tbody id="dx-run"></tbody></table>
+    </div>
+    <p class="caption">Velocities in blocks per tick, energies in blocks (TE = altitude + |v|²/2g, g = 0.08). Q(v, p) = r + γV(v′), with r the tick's ΔTE and γ = 1 − 1/3000. V is pumpdp's, read bilinearly as pumpdp does. The policy and the flights take the argmax over pumpdp's 0.25° pitch grid on [−89, 89]. The maps use a 1° scan refined to 0.25°. V is embedded as float32. Against pumpdp's own flight in the game, that moves the pitch on 48 of 3000 ticks, by up to 3°, all where Q is nearly flat in pitch, and the flight ends on the same state. The lift panel plots Q over the dive branch p ∈ [0, 89] against lift = cos²p, minus the chord between the two bangs (p = 0 at lift 1, p = 89 at lift ≈ 0.0003). Q = ΔPE + ΔKE + γV(v′), with ΔPE = vy′ (PE is altitude); the panel draws each minus its own chord. In the dive ΔPE's only nonlinear term in lift is the conversion's. Under f, minus its chord ΔPE is one fixed parabola (gap 0.00147·f at the middle lift), whatever v is; under k the conversion's outer factor is lift<sup>k</sup>, and the bend it adds scales with the fall speed. Positive means concave, where an interior pitch beats mixing the bangs. The midpoint gap is that total at the middle lift (p ≈ 45°). A flip is a node whose policy flies 0↔89 then back across more than 40° each tick. A reversal is a tick where pitch turns around by more than 10° on both sides.</p>
+  </div>
+  <div class="right">
+    <div class="readout" id="dx-mapread"></div>
+    <div class="key" id="dx-lread"></div>
+    <div class="box mapbox"><canvas id="dx-map" aria-label="policy map over velocity, with the flight from v0"></canvas></div>
+    <div class="box"><canvas id="dx-ql" aria-label="Q against lift on the dive branch at the probe, minus the chord between the bangs"></canvas></div>
+    <div class="readout" id="dx-trread"></div>
+    <div class="readout" id="dx-qpread"></div>
+    <div class="box"><canvas id="dx-tr" aria-label="pitch against tick of the flight from v0"></canvas></div>
+    <div class="box"><canvas id="dx-qp" aria-label="Q against pitch at the probe, minus its max"></canvas></div>
+  </div>
+  <script>
+  (async () => {
+    const DATA = /*@DATA@*/null;
+    if(!DATA) {
+      document.querySelector("#dx .right").innerHTML = `<p class="caption" style="grid-column: 1 / -1; font-size: 15px">This is the template, with no value functions in it. Open the built page, runs/pumpdp/ablate/dp_explorer.html, or build it with <code>python3 tools/build_dp_explorer.py</code>.</p>`;
+      return;
+    }
+    const root = document.querySelector("#dx"), $q = s => root.querySelector(s);
+    const css = getComputedStyle(document.documentElement);
+    const T = Object.fromEntries(["bg", "panel", "line", "rule", "fg", "muted", "faint", "rate", "chat", "fly", "ke", "mono"].map(k => [k, css.getPropertyValue(`--${k}`).trim()]));
+
+    // ---- the grid: pumpdp's default (vy from -2, dv 0.01), cropped to node rows J0.. ----
+    const { J0, ny: NYG, nz: NZG, vy0: VY0, dv: DV, gam: GAM } = DATA;
+    const VYLO = VY0 + J0*DV, VYHI = VY0 + (J0 + NYG - 1)*DV, VZHI = (NZG - 1)*DV;
+    const nodeVy = j => VY0 + (j + J0)*DV, nodeVz = k => k*DV;
+
+    async function inflate(b64, n) {
+      const bin = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+      const raw = new Uint8Array(await new Response(new Blob([bin]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
+      const b = new Uint8Array(4*n);
+      for(let p=0;p<4;p++) for(let i=0;i<n;i++) b[4*i + p] = raw[p*n + i];
+      return Float64Array.from(new Float32Array(b.buffer));
+    }
+    const RUNS = DATA.runs;
+    const I1 = RUNS.findIndex(r => r.f === 1 && r.k === 1);
+    const lab = r => r.k !== 1 ? `k = ${r.k}` : `f = ${r.f}`;
+    // each knob's runs, the game included, ordered toward more conversion at interior pitches
+    const FAM = { f: RUNS.map((r, i) => i).filter(i => RUNS[i].k === 1).sort((a, b) => RUNS[a].f - RUNS[b].f),
+                  k: RUNS.map((r, i) => i).filter(i => RUNS[i].f === 1).sort((a, b) => RUNS[b].k - RUNS[a].k) };
+    const cache = new Map();
+    async function model(i) {
+      if(!cache.has(i)) { const r = RUNS[i]; cache.set(i, { ...r, i, V: await inflate(r.V, NYG*NZG), maps: {}, cyc: null }); }
+      return cache.get(i);
+    }
+
+    // ---- physics: pumpdp's `step`, `transition` and bilinear read, operation for operation ----
+    const G = 0.08, DY = Math.fround(0.98), DZ = Math.fround(0.99), LIMIT = 89, PST = 0.25;
+    const NP = Math.round(2*LIMIT/PST) + 1, PS = new Float64Array(NP), SL = new Float64Array(NP), SU = new Float64Array(NP);
+    for(let i=0;i<NP;i++) { const p = Math.min(-LIMIT + PST*i, LIMIT), lean = p*(Math.PI/180); PS[i] = p; SL[i] = Math.cos(lean)*Math.cos(lean); SU[i] = lean < 0 ? -Math.sin(lean) : 0; }
+    const I0 = Math.round(LIMIT/PST);                 // p = 0
+    const ke = (vy, vz) => (vy*vy + vz*vz)*0.5/G;
+    let NY = 0, NZ = 0, RV = 0;                         // the last step's next state and γV there
+    function step(vy, vz, lift, ups, c2, k) {
+      const hor = Math.abs(vz);
+      let y = vy + G*(-1 + lift*0.75), z = vz;
+      if(y < 0) { const c = y*-0.1*(k === 1 ? lift : Math.pow(lift, k)) + c2*lift*(1 - lift); y += c; z += c; }
+      const u = hor*ups*0.04; y += u*3.2; z -= u;
+      z += (hor - z)*0.1;
+      NY = y*DY; NZ = z*DZ;
+    }
+    function readV(V, vy, vz) {
+      const cy = Math.min(Math.max(vy, VYLO), VYHI), cz = Math.min(Math.max(vz, 0), VZHI);
+      const x = (cy - VY0)/DV, w = cz/DV;
+      const jf = Math.min(Math.floor(x), J0 + NYG - 2), k = Math.min(Math.floor(w), NZG - 2);
+      const a = Math.fround(x - jf), b = Math.fround(w - k), n = (jf - J0)*NZG + k;
+      const lo = V[n]*(1 - b) + V[n + 1]*b, hi = V[n + NZG]*(1 - b) + V[n + NZG + 1]*b;
+      return lo*(1 - a) + hi*a;
+    }
+    // Q(v, p) for model M at lift/upSin; leaves the next state in NY, NZ and γV(v′) in RV.
+    function Q(M, vy, vz, lift, ups) {
+      step(vy, vz, lift, ups, M.c2, M.k);
+      const cy = Math.min(Math.max(NY, VYLO), VYHI), cz = Math.min(Math.max(NZ, 0), VZHI);
+      RV = GAM*readV(M.V, NY, NZ);
+      return NY + ke(cy, cz) - ke(vy, vz) + RV;
+    }
+    // pumpdp's flown policy: the first strict max over the 0.25° grid
+    function argmax(M, vy, vz) {
+      let bi = 0, bq = -Infinity;
+      for(let i=0;i<NP;i++) { const q = Q(M, vy, vz, SL[i], SU[i]); if(q > bq) { bq = q; bi = i; } }
+      return bi;
+    }
+    // the maps': every 4th index (1°), then the 0.25° steps either side of the winner
+    function argmaxFast(M, vy, vz) {
+      let bi = 0, bq = -Infinity;
+      for(let i=0;i<NP;i+=4) { const q = Q(M, vy, vz, SL[i], SU[i]); if(q > bq) { bq = q; bi = i; } }
+      const lo = Math.max(0, bi - 3), hi = Math.min(NP - 1, bi + 3);
+      let ri = lo, rq = -Infinity;
+      for(let i=lo;i<=hi;i++) { const q = Q(M, vy, vz, SL[i], SU[i]); if(q > rq) { rq = q; ri = i; } }
+      return ri;
+    }
+    function fly(M, vy, vz, n) {
+      const out = { vy: new Float64Array(n + 1), vz: new Float64Array(n + 1), p: new Float64Array(n), te: new Float64Array(n + 1) };
+      let te = ke(vy, vz), h = 0; out.vy[0] = vy; out.vz[0] = vz; out.te[0] = te;
+      for(let t=0;t<n;t++) {
+        const i = argmax(M, vy, vz); out.p[t] = PS[i];
+        step(vy, vz, SL[i], SU[i], M.c2, M.k); vy = NY; vz = NZ; h += vy;
+        out.vy[t + 1] = vy; out.vz[t + 1] = vz; out.te[t + 1] = h + ke(vy, vz);
+      }
+      return out;
+    }
+    const reversals = (p, thr) => { let n = 0; for(let t=1;t<p.length - 1;t++) { const d0 = p[t] - p[t - 1], d1 = p[t + 1] - p[t]; if(d0*d1 < 0 && Math.abs(d0) > thr && Math.abs(d1) > thr) n++; } return n; };
+
+    // Q along the dive branch (p from 0 to 89) against lift, each part minus its chord
+    const LMIN = SL[NP - 1];
+    function liftSplit(M, vy, vz) {
+      const n = NP - I0, L = new Float64Array(n), parts = [0, 1, 2, 3].map(() => new Float64Array(n));
+      for(let j=0;j<n;j++) {
+        const i = I0 + j; Q(M, vy, vz, SL[i], SU[i]);
+        const cy = Math.min(Math.max(NY, VYLO), VYHI), cz = Math.min(Math.max(NZ, 0), VZHI);
+        L[j] = SL[i]; parts[1][j] = NY; parts[2][j] = ke(cy, cz); parts[3][j] = RV;
+        parts[0][j] = NY + parts[2][j] + RV;
+      }
+      for(const a of parts) { const y1 = a[0], y0 = a[n - 1]; for(let j=0;j<n;j++) a[j] -= y0 + (y1 - y0)*(L[j] - LMIN)/(1 - LMIN); }
+      return { L, parts };
+    }
+    const LMID = (1 + LMIN)/2, PMID = Math.acos(Math.sqrt(LMID))*180/Math.PI, MU = [LMID, 0];
+    function midGap(M, vy, vz) {
+      const a = Q(M, vy, vz, SL[I0], 0), b = Q(M, vy, vz, LMIN, 0), m = Q(M, vy, vz, LMID, 0);
+      return m - (a + b)/2;
+    }
+
+    // ---- per-model maps, filled a band of rows at a time so the page stays live ----
+    let job = 0;
+    async function ensureMap(M, layer) {
+      const key = layer === "dp" ? "pitch" : layer;
+      if(layer === "dp") { const M1 = await model(I1); if(!(await ensureMap(M1, "pitch"))) return null; }
+      if(M.maps[key]) return M.maps[key];
+      const my = ++job, a = new Float64Array(NYG*NZG);
+      for(let j0=0;j0<NYG;j0+=12) {
+        for(let j=j0;j<Math.min(NYG, j0 + 12);j++) for(let k=0;k<NZG;k++) {
+          const vy = nodeVy(j), vz = nodeVz(k), n = j*NZG + k;
+          if(key === "pitch") a[n] = PS[argmaxFast(M, vy, vz)];
+          else if(key === "gap") a[n] = midGap(M, vy, vz);
+          else {
+            let y = vy, z = vz; const p = [];
+            for(let s=0;s<3;s++) { const i = argmaxFast(M, y, z); p.push(PS[i]); step(y, z, SL[i], SU[i], M.c2, M.k); y = NY; z = NZ; }
+            a[n] = (p[1] - p[0])*(p[2] - p[1]) < 0 && Math.abs(p[1] - p[0]) > 40 && Math.abs(p[2] - p[1]) > 40 ? 1 : 0;
+          }
+        }
+        busy(`computing the ${key} map for ${lab(M)}: ${String(Math.round(100*Math.min(1, (j0 + 12)/NYG))).padStart(3)}%`);
+        await new Promise(r => setTimeout(r, 0));
+        if(my !== job) return null;
+      }
+      busy("");
+      return (M.maps[key] = a);
+    }
+
+    // ---- state ----
+    const st = { knob: "f", fi: I1, layer: "pitch", view: null, n: 600, vy0: -0.563, vz0: 1.746, ghost: true };
+    try { Object.assign(st, JSON.parse(localStorage.getItem("dp-explorer-1") || "{}")); } catch(e) {}
+    if(!(st.fi >= 0 && st.fi < RUNS.length)) st.fi = I1;
+    if(!FAM[st.knob]) st.knob = "f";
+    if(!FAM[st.knob].includes(st.fi)) st.fi = I1;
+    const save = () => { try { localStorage.setItem("dp-explorer-1", JSON.stringify(st)); } catch(e) {} };
+    let M = null, M1 = null, F = null, F1 = null, probe = null, probeTick = null, hoverMap = null, mapImg = null;
+
+    // the map's view, [vz0, vz1, vy0, vy1]: the wheel zooms it, shift- or right-drag pans it, kept inside the crop
+    const CYCLE = [0, 2.6, -0.95, 1.9];
+    const okView = v => Array.isArray(v) && v.length === 4 && v.every(isFinite) && v[1] > v[0] && v[3] > v[2];
+    if(!okView(st.view)) st.view = CYCLE.slice();
+    function setView(z0, z1, y0, y1) {
+      const wz = Math.min(z1 - z0, VZHI), wy = Math.min(y1 - y0, VYHI - VYLO);
+      z0 = Math.min(Math.max(z0, 0), VZHI - wz); y0 = Math.min(Math.max(y0, VYLO), VYHI - wy);
+      st.view = [z0, z0 + wz, y0, y0 + wy]; save();
+    }
+
+    // ---- drawing helpers ----
+    function setup(cv) {
+      const dpr = window.devicePixelRatio || 1, r = cv.getBoundingClientRect();
+      const w = Math.max(10, Math.round(r.width*dpr)), h = Math.max(10, Math.round(r.height*dpr));
+      if(cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+      const c = cv.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, r.width, r.height);
+      return { c, W: r.width, H: r.height };
+    }
+    function niceStep(span, n) { const raw = span/n, p = Math.pow(10, Math.floor(Math.log10(raw))), m = raw/p; return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10)*p; }
+    // a frame with axes: x0..x1 left to right, y0..y1 bottom to top unless flip
+    function frame(cv, x0, x1, y0, y1, o = {}) {
+      const { c, W, H } = setup(cv), m = { l: 46, r: o.mr ?? 8, t: 8, b: 26 };
+      const fx = x => m.l + (x - x0)/(x1 - x0)*(W - m.l - m.r);
+      const fy = o.flip ? y => m.t + (y - y0)/(y1 - y0)*(H - m.t - m.b) : y => H - m.b - (y - y0)/(y1 - y0)*(H - m.t - m.b);
+      const ix = px => x0 + (px - m.l)/(W - m.l - m.r)*(x1 - x0);
+      const iy = o.flip ? py => y0 + (py - m.t)/(H - m.t - m.b)*(y1 - y0) : py => y0 + (H - m.b - py)/(H - m.t - m.b)*(y1 - y0);
+      const axes = () => {
+        c.font = `10.5px ${T.mono}`; c.fillStyle = T.muted; c.strokeStyle = T.rule; c.lineWidth = 1;
+        const sx = niceStep(x1 - x0, Math.max(3, (W - 60)/70)), sy = niceStep(Math.abs(y1 - y0), Math.max(3, (H - 40)/40));
+        c.textAlign = "center"; c.textBaseline = "top";
+        for(let x=Math.ceil(x0/sx)*sx;x<=x1 + 1e-9;x+=sx) { const px = fx(x); c.beginPath(); c.moveTo(px, H - m.b); c.lineTo(px, H - m.b + 3); c.stroke(); c.fillText(fmt(x, sx), px, H - m.b + 4); }
+        c.textAlign = "right"; c.textBaseline = "middle";
+        const ylo = Math.min(y0, y1), yhi = Math.max(y0, y1);
+        for(let y=Math.ceil(ylo/sy)*sy;y<=yhi + 1e-12;y+=sy) { const py = fy(y); c.beginPath(); c.moveTo(m.l - 3, py); c.lineTo(m.l, py); c.stroke(); c.fillText(fmt(y, sy), m.l - 5, py); }
+        if(o.xl) { c.textAlign = "right"; c.textBaseline = "bottom"; c.fillText(o.xl, W - m.r - 2, H - m.b - 2); }
+        if(o.yl) { c.textAlign = "left"; c.textBaseline = "top"; c.fillText(o.yl, m.l + 4, m.t + 2); }
+      };
+      const clip = () => { c.save(); c.beginPath(); c.rect(m.l, m.t, W - m.l - m.r, H - m.t - m.b); c.clip(); };
+      return { c, W, H, m, fx, fy, ix, iy, axes, clip };
+    }
+    function fmt(v, s) { const d = Math.max(0, -Math.floor(Math.log10(s) + 1e-9)); return Math.abs(v) < s/1e6 ? "0" : v.toFixed(d).replace("-", "−"); }
+    // Fixed-width numbers, so readouts don't jump: a space where a minus would go, padded to w
+    // characters. Shown in a monospace font with white-space: pre.
+    const fnum = (v, d = 4, w = 0) => (v == null || !isFinite(v) ? "—" : (v < 0 ? "−" : " ") + Math.abs(v).toFixed(d)).padStart(w);
+    // below 1e-9 is rounding noise (vy′ minus its chord is ~1e-17), and a two-digit exponent would widen the field
+    const fexp = v => v == null || !isFinite(v) ? "    —   " : Math.abs(v) < 1e-9 ? " 0      " : (v < 0 ? "−" : " ") + Math.abs(v).toExponential(2).replace("e-", "e−");
+    const fint = (v, w) => String(v).padStart(w);
+    function busy(s) { const el = $q("#dx-mapread"); el.classList.toggle("busy", !!s); if(s) el.textContent = s; }
+
+    // Pump policy blur's diverging ramp through a near-black zero: nose up (−) blue, nose down (+) pink.
+    const UP = [0x6f, 0x8c, 0xff], MID = [0x0c, 0x0d, 0x10], DOWN = [0xe0, 0x60, 0x7e];
+    const ramp = (x, neg, pos) => { const f = Math.min(1, Math.abs(x)), c = x < 0 ? neg : pos; return c.map((v, j) => MID[j] + (v - MID[j])*f); };
+    const pcol = p => ramp(p/LIMIT, UP, DOWN);
+    const rgb = c => `rgb(${c.map(Math.round).join(",")})`;
+    const gapScale = g => Math.sign(g)*Math.sqrt(Math.min(1, Math.abs(g)/0.01));
+    const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+    function layerImage(layer, A, A1) {
+      const cv = document.createElement("canvas"); cv.width = NZG; cv.height = NYG;
+      const c = cv.getContext("2d"), img = c.createImageData(NZG, NYG), d = img.data;
+      const teal = hex(T.fly), orange = hex(T.chat), bg = hex(T.panel);
+      for(let j=0;j<NYG;j++) for(let k=0;k<NZG;k++) {
+        const n = j*NZG + k, o = 4*((NYG - 1 - j)*NZG + k); let col;
+        if(layer === "pitch") col = pcol(A[n]);
+        else if(layer === "flip") col = A[n] ? orange : pcol(A1[n]).map((x, i) => MID[i] + 0.4*(x - MID[i]));
+        else if(layer === "gap") col = ramp(gapScale(A[n]), orange, teal);
+        else col = ramp((A[n] - A1[n])/45, UP, DOWN);
+        d[o] = col[0]; d[o + 1] = col[1]; d[o + 2] = col[2]; d[o + 3] = 255;
+      }
+      c.putImageData(img, 0, 0); return cv;
+    }
+
+    // ---- panels ----
+    const cvMap = $q("#dx-map"), cvTr = $q("#dx-tr"), cvQp = $q("#dx-qp"), cvQl = $q("#dx-ql");
+    let mapFr = null, trFr = null;
+    function drawMap() {
+      const [z0, z1, y0, y1] = st.view;
+      const fr = mapFr = frame(cvMap, z0, z1, y0, y1, { xl: "vz", yl: "vy", mr: 72 }), { c, fx, fy } = fr;
+      fr.clip();
+      if(mapImg) {
+        c.imageSmoothingEnabled = false;
+        // node k sits at the center of pixel column k
+        const sx = (z0/DV + 0.5), sy = (NYG - 1 - (y1 - VYLO)/DV + 0.5);
+        c.drawImage(mapImg, sx, sy, (z1 - z0)/DV, (y1 - y0)/DV, fx(z0), fy(y1), fx(z1) - fx(z0), fy(y0) - fy(y1));
+      }
+      const path = (Fl, col, w, a) => {
+        if(!Fl) return; c.globalAlpha = a; c.strokeStyle = col; c.lineWidth = w; c.beginPath();
+        for(let t=0;t<Fl.vy.length;t++) { const x = fx(Fl.vz[t]), y = fy(Fl.vy[t]); t ? c.lineTo(x, y) : c.moveTo(x, y); }
+        c.stroke(); c.globalAlpha = 1;
+      };
+      // Pump policy blur's flight: white, fading from opaque at v0 to FADE at the end; ● start, □ end
+      const faded = (Fl, col, lw) => {
+        const n = Fl.vy.length - 1; c.strokeStyle = col; c.lineWidth = lw; c.lineCap = "round";
+        for(let t=1;t<=n;t++) { c.globalAlpha = fade(t, n); c.beginPath(); c.moveTo(fx(Fl.vz[t - 1]), fy(Fl.vy[t - 1])); c.lineTo(fx(Fl.vz[t]), fy(Fl.vy[t])); c.stroke(); }
+        c.globalAlpha = 1;
+      };
+      if(st.ghost && F1 && M !== M1) faded(F1, T.muted, 1);
+      if(F) {
+        faded(F, "#ffffff", 1.6);
+        const e = [fx(F.vz[F.p.length]), fy(F.vy[F.p.length])];
+        c.strokeStyle = T.fg; c.lineWidth = 1.5; c.globalAlpha = 0.5; c.beginPath(); c.rect(e[0] - 4, e[1] - 4, 8, 8); c.stroke(); c.globalAlpha = 1;
+      }
+      c.beginPath(); c.arc(fx(st.vz0), fy(st.vy0), 5, 0, 7); c.fillStyle = "#ffffff"; c.fill(); c.strokeStyle = T.bg; c.lineWidth = 1.5; c.stroke();
+      if(probe) for(const [w, col] of [[4, T.bg], [2, T.rate]]) { c.strokeStyle = col; c.lineWidth = w; c.beginPath(); c.arc(fx(probe[1]), fy(probe[0]), 7, 0, 7); c.stroke(); }
+      c.restore(); fr.axes();
+      drawMapKey(fr);
+    }
+    const FADE = 0.06, fade = (i, n) => 1 - (1 - FADE)*i/n;
+    // the map's key, in its right margin: a color bar for the layer, top to bottom
+    function drawMapKey(fr) {
+      const { c, W, m, H } = fr, x = W - m.r + 10, w = 9, top = m.t, bh = H - m.t - m.b;
+      const K = {
+        pitch: [t => pcol(-LIMIT + 2*LIMIT*t), [[0, "−89"], [0.25, "−45"], [0.5, "0"], [0.75, "45"], [1, "89"]], null],
+        dp: [t => ramp(-1 + 2*t, UP, DOWN), [[0, "−45"], [0.5, "0"], [1, "+45"]], ["more up", "more down"]],
+        gap: [t => ramp(1 - 2*t, hex(T.chat), hex(T.fly)), [[0, "+.01"], [0.25, "+.0025"], [0.5, "0"], [0.75, "−.0025"], [1, "−.01"]], ["concave", "convex"]],
+      }[st.layer];
+      c.font = `10.5px ${T.mono}`; c.textAlign = "left"; c.textBaseline = "middle";
+      if(!K) {
+        const sw = [[hex(T.chat), "flip"], [pcol(60).map((v, i) => MID[i] + 0.4*(v - MID[i])), "down"], [pcol(-60).map((v, i) => MID[i] + 0.4*(v - MID[i])), "up"], [MID, "level"]];
+        sw.forEach(([col, lab], i) => { const y = top + 4 + i*18; c.fillStyle = rgb(col); c.fillRect(x, y, w, 12); c.strokeStyle = T.line; c.lineWidth = 1; c.strokeRect(x + 0.5, y + 0.5, w - 1, 11); c.fillStyle = T.muted; c.fillText(lab, x + w + 4, y + 6); });
+        return;
+      }
+      // the gap's bar is linear in its sqrt color scale, so its ticks sit where that puts them
+      const [col, ticks, ends] = K, y0 = top + 22, y1 = top + bh - 22;
+      for(let i=0;i<=y1 - y0;i++) { c.fillStyle = rgb(col(i/(y1 - y0))); c.fillRect(x, y0 + i, w, 1.5); }
+      c.fillStyle = T.muted;
+      for(const [t, lab] of ticks) c.fillText(lab, x + w + 3, y0 + t*(y1 - y0));
+      if(ends) { c.textAlign = "left"; c.fillText(ends[0], x - 2, top + 5); c.fillText(ends[1], x - 2, top + bh - 4); }
+    }
+    function drawTrace() {
+      const n = F ? F.p.length : 1;
+      const fr = trFr = frame(cvTr, 0, n, -92, 92, { flip: true, xl: "tick", yl: "pitch (nose up ↑)" }), { c, fx, fy } = fr;
+      fr.clip();
+      c.strokeStyle = T.rule; c.beginPath(); c.moveTo(fx(0), fy(0)); c.lineTo(fx(n), fy(0)); c.stroke();
+      const tr = (Fl, col, a, w) => { if(!Fl) return; c.globalAlpha = a; c.strokeStyle = col; c.lineWidth = w; c.beginPath(); for(let t=0;t<Fl.p.length;t++) { const y = fy(Fl.p[t]); t ? c.lineTo(fx(t), y) : c.moveTo(fx(t), y); c.lineTo(fx(t + 1), y); } c.stroke(); c.globalAlpha = 1; };
+      if(st.ghost && F1 && M !== M1) tr(F1, T.faint, 0.9, 1);
+      tr(F, T.fly, 1, 1.1);
+      if(probeTick != null) { c.strokeStyle = T.rate; c.lineWidth = 1; c.beginPath(); c.moveTo(fx(probeTick + 0.5), fr.m.t); c.lineTo(fx(probeTick + 0.5), fr.H - fr.m.b); c.stroke(); }
+      c.restore(); fr.axes();
+    }
+    function drawQ() {
+      if(!probe) return;
+      const [vy, vz] = probe;
+      // Q against pitch
+      const qs = (MM) => { const a = new Float64Array(NP); let mx = -Infinity; for(let i=0;i<NP;i++) { a[i] = Q(MM, vy, vz, SL[i], SU[i]); mx = Math.max(mx, a[i]); } for(let i=0;i<NP;i++) a[i] -= mx; return a; };
+      const q = qs(M), q1 = st.ghost && M !== M1 ? qs(M1) : null;
+      let lo = 0; for(const a of [q, q1]) if(a) for(let i=0;i<NP;i++) lo = Math.min(lo, a[i]);
+      // zoomed to the top: the bangs' competition is ~1e-3, the full range ~0.5
+      lo = Math.max(lo, -Math.max(0.004, 3*Math.abs(Q(M, vy, vz, SL[I0], 0) - Q(M, vy, vz, LMIN, 0))));
+      const fp = frame(cvQp, -89, 89, lo*1.05 - 1e-6, -lo*0.04 + 1e-7, { xl: "pitch", yl: "Q − max Q (clipped)" });
+      fp.clip();
+      const line = (fr, xs, ys, col, w, a) => { const { c, fx, fy } = fr; c.globalAlpha = a; c.strokeStyle = col; c.lineWidth = w; c.beginPath(); for(let i=0;i<ys.length;i++) { const x = fx(xs[i]), y = fy(ys[i]); i ? c.lineTo(x, y) : c.moveTo(x, y); } c.stroke(); c.globalAlpha = 1; };
+      fp.c.strokeStyle = T.rule; fp.c.beginPath(); fp.c.moveTo(fp.fx(0), fp.m.t); fp.c.lineTo(fp.fx(0), fp.H - fp.m.b); fp.c.stroke();
+      if(q1) line(fp, PS, q1, T.faint, 1.2, 1);
+      line(fp, PS, q, T.fg, 1.4, 1);
+      const bi = q.indexOf(0); fp.c.fillStyle = T.rate; fp.c.beginPath(); fp.c.arc(fp.fx(PS[bi]), fp.fy(0), 4, 0, 7); fp.c.fill();
+      fp.c.restore(); fp.axes();
+      // Q against lift, dive branch, minus chords
+      const s = liftSplit(M, vy, vz), s1 = q1 ? liftSplit(M1, vy, vz) : null;
+      let ext = 1e-5; for(const S of [s, s1]) if(S) for(const a of S.parts) for(let j=0;j<a.length;j++) ext = Math.max(ext, Math.abs(a[j]));
+      const fl = frame(cvQl, 0, 1, -ext*1.08, ext*1.08, { xl: "lift = cos² p", yl: "minus chord (blocks)" });
+      fl.clip();
+      const { c, fx, fy } = fl;
+      c.strokeStyle = T.line; c.beginPath(); c.moveTo(fx(0), fy(0)); c.lineTo(fx(1), fy(0)); c.stroke();
+      c.globalAlpha = 0.18; c.fillStyle = T.fly; c.beginPath(); c.moveTo(fx(s.L[0]), fy(0)); for(let j=0;j<s.L.length;j++) c.lineTo(fx(s.L[j]), fy(Math.max(0, s.parts[0][j]))); c.lineTo(fx(s.L[s.L.length - 1]), fy(0)); c.fill();
+      c.fillStyle = T.chat; c.beginPath(); c.moveTo(fx(s.L[0]), fy(0)); for(let j=0;j<s.L.length;j++) c.lineTo(fx(s.L[j]), fy(Math.min(0, s.parts[0][j]))); c.lineTo(fx(s.L[s.L.length - 1]), fy(0)); c.fill(); c.globalAlpha = 1;
+      const cols = [T.fg, T.muted, T.ke, T.fly];
+      if(s1) line(fl, s1.L, s1.parts[0], T.faint, 1.2, 1);
+      // ΔPE = vy′ minus its chord is the same parabola at every state (the dive's only lift² term,
+      // −0.006·0.98·f·lift², midpoint gap 0.00147·f): the knob itself, drawn for scale
+      for(const p of [3, 2, 1, 0]) line(fl, s.L, s.parts[p], cols[p], p ? 1.1 : 1.8, 1);
+      c.strokeStyle = T.rule; c.setLineDash([3, 3]); c.beginPath(); c.moveTo(fx(LMID), fl.m.t); c.lineTo(fx(LMID), fl.H - fl.m.b); c.stroke(); c.setLineDash([]);
+      c.restore(); fl.axes();
+      const at = S => { let jm = 0; for(let j=0;j<S.L.length;j++) if(Math.abs(S.L[j] - LMID) < Math.abs(S.L[jm] - LMID)) jm = j; return S.parts.map(a => a[jm]); };
+      const g = at(s);
+      // the key, each line's value at the middle lift (the dashed line)
+      const sw = (col, h = 3, a = 1) => `<i style="background:${col};height:${h}px;opacity:${a}"></i>`;
+      $q("#dx-lread").innerHTML = [[sw(T.fg), "Q = ΔPE + ΔKE + γV(v′)", g[0]], [sw(T.muted, 2), "ΔPE = vy′", g[1]], [sw(T.ke, 2), "ΔKE", g[2]], [sw(T.fly, 2), "γV(v′)", g[3]]]
+        .map(([k, lab, v]) => `<span>${k}${lab} <b>${fexp(v)}</b></span>`).join("") + (s1 ? `<span>${sw(T.faint, 2)}Q in the game</span>` : "")
+        + `<span>${sw(T.fly, 10, 0.35)}concave</span><span>${sw(T.chat, 10, 0.35)}convex</span><span>values at the dashed middle lift, each minus its chord</span>`;
+      const ib = argmax(M, vy, vz), ib1 = argmax(M1, vy, vz);
+      $q("#dx-qpread").textContent = `argmax ${fnum(PS[ib], 2, 6)}°` + (M !== M1 ? `  (game: ${fnum(PS[ib1], 2, 6)}°)` : "") + `   Q(0) − Q(89) ${fexp(Q(M, vy, vz, SL[I0], 0) - Q(M, vy, vz, LMIN, 0))}`;
+      const rows = [["v = (vz, vy)", `${vz.toFixed(3)},${fnum(vy, 3)}`, ""], ["argmax pitch", fnum(PS[ib], 2, 6) + "°", fnum(PS[ib1], 2, 6) + "°"],
+        ["midpoint gap", fexp(midGap(M, vy, vz)), fexp(midGap(M1, vy, vz))], ["Q(0) − Q(89)", fexp(Q(M, vy, vz, SL[I0], 0) - Q(M, vy, vz, LMIN, 0)), fexp(Q(M1, vy, vz, SL[I0], 0) - Q(M1, vy, vz, LMIN, 0))],
+        ["γ (climb angle)", fnum(Math.atan2(vy, vz)*180/Math.PI, 2, 6) + "°", ""]];
+      $q("#dx-read").innerHTML = rows.map(r => `<tr><td>${r[0]}</td><td class="v">${r[1]}</td><td class="v f1">${r[2]}</td></tr>`).join("");
+      $q("#dx-ph").textContent = hoverMap ? "at the hovered point" : probeTick != null ? `at tick ${probeTick} of the flight` : "at v0";
+    }
+    function drawAll() { drawMap(); drawTrace(); drawQ(); }
+
+    // ---- recompute ----
+    function refly() {
+      F = fly(M, st.vy0, st.vz0, st.n);
+      F1 = M === M1 ? F : fly(M1, st.vy0, st.vz0, st.n);
+      const rv = reversals(F.p, 10), rv1 = reversals(F1.p, 10);
+      const rate = (F.te[st.n] - F.te[0])/st.n*20, rate1 = (F1.te[st.n] - F1.te[0])/st.n*20;
+      $q("#dx-trread").textContent = `${fint(st.n, 4)} ticks: ${fint(rv, 4)} reversals (${(1000*rv/st.n).toFixed(1).padStart(5)} per 1000), ${fint(reversals(F.p, 40), 4)} over 40°; ΔTE ${fnum(rate, 4)} b/s` + (M !== M1 ? `   game: ${fint(rv1, 4)}, ${fnum(rate1, 4)} b/s` : "");
+      if(probeTick != null && probeTick >= st.n) probeTick = null;
+      setProbe();
+    }
+    function setProbe() {
+      probe = hoverMap ? hoverMap : probeTick != null && F ? [F.vy[probeTick], F.vz[probeTick]] : [st.vy0, st.vz0];
+    }
+    async function setModel() {
+      M = await model(st.fi); M1 = await model(I1);
+      for(const X of [M, M1]) X.c2 = (X.f - 1)*0.1*0.75*G;
+      if(!M.cyc) { const c = fly(M, DATA.ref[0], DATA.ref[1], 6000), p = M.period || 253, s = 6000 - p; M.cyc = { vy: c.vy.subarray(s), vz: c.vz.subarray(s), p: c.p.subarray(s) }; }
+      $q("#dx-f-o").textContent = st.knob === "k" ? M.k : M.f;
+      $q("#dx-fh").textContent = $q("#dx-fh2").textContent = M === M1 ? "game" : lab(M);
+      const more = M.f > 1 || M.k < 1;
+      $q("#dx-fnote").textContent = M === M1 ? "the game" : more ? "converts more at interior pitches than the game" : "converts less at interior pitches than the game";
+      $q("#dx-run").innerHTML = [["solver's rate", `${M.rate.toFixed(4)} b/s`, `${M1.rate.toFixed(4)} b/s`], ["cycle period", `${M.period ?? "none"}`, `${M1.period}`],
+        ["cycle reversals", `${reversals(M.cyc.p, 10)}`, M1.cyc ? `${reversals(M1.cyc.p, 10)}` : ""]].map(r => `<tr><td>${r[0]}</td><td class="v">${r[1]}</td><td class="v f1">${r[2]}</td></tr>`).join("");
+      refly(); mapImg = null; drawAll();
+      await setLayer();
+    }
+    async function setLayer() {
+      const layer = st.layer, Mi = M;
+      // a newer job cancels this one's maps (null); the flip layer draws over the pitch map
+      if(layer === "flip" && !(await ensureMap(Mi, "pitch"))) return;
+      const A = await ensureMap(Mi, layer);
+      if(!A || Mi !== M || layer !== st.layer) return;
+      mapImg = layerImage(layer, A, layer === "dp" ? M1.maps.pitch : layer === "flip" ? Mi.maps.pitch : null);
+      const key = { pitch: "policy pitch", flip: "flips: 0↔89 and back in 2 ticks", gap: `Q midpoint gap at p = ${PMID.toFixed(1)}° (blocks, sqrt color scale)`, dp: "pitch − pitch in the game" }[layer];
+      let extra = ""; if(layer === "flip") { let n = 0; for(const x of A) n += x; extra = `   ${n} flip nodes`; }
+      busy(""); $q("#dx-mapread").textContent = key + extra;
+      drawMap();
+    }
+
+    // ---- controls ----
+    const fIn = $q("#dx-f"), knobIn = $q("#dx-knob");
+    function syncKnob() {
+      const fam = FAM[st.knob];
+      fIn.max = fam.length - 1; fIn.value = fam.indexOf(st.fi); knobIn.value = st.knob;
+      $q("#dx-f-l").textContent = st.knob;
+    }
+    fIn.addEventListener("input", () => { st.fi = FAM[st.knob][+fIn.value]; $q("#dx-f-o").textContent = st.knob === "k" ? RUNS[st.fi].k : RUNS[st.fi].f; save(); setModel(); });
+    knobIn.addEventListener("change", () => { st.knob = knobIn.value; if(!FAM[st.knob].includes(st.fi)) st.fi = I1; syncKnob(); save(); setModel(); });
+    syncKnob();
+    const sel = (id, key, fn) => { const el = $q(id); el.value = st[key]; el.addEventListener("change", () => { st[key] = el.value; save(); fn(); }); };
+    sel("#dx-layer", "layer", setLayer);
+    $q("#dx-zoom").addEventListener("click", () => { setView(...CYCLE); drawMap(); });
+    const nIn = $q("#dx-n"); nIn.value = st.n; $q("#dx-n-o").textContent = st.n;
+    nIn.addEventListener("input", () => { st.n = +nIn.value; $q("#dx-n-o").textContent = st.n; save(); refly(); drawAll(); });
+    for(const [id, key] of [["#dx-ghost", "ghost"]]) { const el = $q(id); el.checked = st[key]; el.addEventListener("change", () => { st[key] = el.checked; save(); refly(); drawAll(); }); }
+    function syncV0() { $q("#dx-vz").value = st.vz0; $q("#dx-vy").value = st.vy0; $q("#dx-vz-t").value = st.vz0.toFixed(3); $q("#dx-vy-t").value = st.vy0.toFixed(3); }
+    function moveV0(vy, vz) { st.vy0 = Math.min(VYHI, Math.max(VYLO, vy)); st.vz0 = Math.min(VZHI, Math.max(0, vz)); syncV0(); save(); refly(); drawAll(); }
+    for(const [id, key] of [["#dx-vz", "vz0"], ["#dx-vy", "vy0"]]) {
+      $q(id).addEventListener("input", e => { const v = { vy0: st.vy0, vz0: st.vz0, [key]: +e.target.value }; moveV0(v.vy0, v.vz0); });
+      $q(id + "-t").addEventListener("change", e => { const x = parseFloat(e.target.value.replace("−", "-")); if(isFinite(x)) { const v = { vy0: st.vy0, vz0: st.vz0, [key]: x }; moveV0(v.vy0, v.vz0); } });
+    }
+    $q("#dx-reset").addEventListener("click", () => { probeTick = null; moveV0(-0.563, 1.746); });
+    syncV0();
+
+    // map: dragging v0's dot moves it, any other drag pans, the wheel zooms, hover probes
+    let drag = false, pan = null, grab = [0, 0];
+    const nearV0 = e => { const r = cvMap.getBoundingClientRect(); return Math.hypot(e.clientX - r.left - mapFr.fx(st.vz0), e.clientY - r.top - mapFr.fy(st.vy0)) <= 10; };
+    const mapAt = e => { const r = cvMap.getBoundingClientRect(); return [mapFr.iy(e.clientY - r.top), mapFr.ix(e.clientX - r.left)]; };
+    cvMap.addEventListener("contextmenu", e => e.preventDefault());
+    cvMap.addEventListener("pointerdown", e => {
+      cvMap.setPointerCapture(e.pointerId); hoverMap = null;
+      // grabbing v0's dot moves v0, anything else pans; v0 doesn't jump to the pointer
+      if(e.button !== 0 || !nearV0(e)) { pan = { at: mapAt(e), view: st.view.slice() }; cvMap.style.cursor = "grabbing"; return; }
+      drag = true; probeTick = null; const [vy, vz] = mapAt(e); grab = [st.vy0 - vy, st.vz0 - vz];
+    });
+    cvMap.addEventListener("wheel", e => {
+      if(!mapFr) return;
+      e.preventDefault();
+      const [vy, vz] = mapAt(e), k = Math.exp(Math.max(-0.5, Math.min(0.5, e.deltaY*(e.deltaMode ? 0.05 : 0.0015)*(e.ctrlKey ? 4 : 1))));
+      const [z0, z1, y0, y1] = st.view;
+      // at most 300x in (a few nodes across), out to the whole crop
+      const w = Math.min(Math.max((z1 - z0)*k, 0.03), VZHI), s = w/(z1 - z0);
+      setView(vz - (vz - z0)*s, vz + (z1 - vz)*s, vy - (vy - y0)*s, vy + (y1 - vy)*s);
+      drawMap();
+    }, { passive: false });
+    cvMap.addEventListener("pointermove", e => {
+      if(!mapFr) return;
+      if(pan) {
+        // the point grabbed stays under the pointer: invert with the view as it was at the grab
+        const r = cvMap.getBoundingClientRect(), [z0, z1, y0, y1] = pan.view, fr = mapFr;
+        const W = fr.W - fr.m.l - fr.m.r, H = fr.H - fr.m.t - fr.m.b;
+        const vz = z0 + (e.clientX - r.left - fr.m.l)/W*(z1 - z0), vy = y1 - (e.clientY - r.top - fr.m.t)/H*(y1 - y0);
+        setView(z0 + pan.at[1] - vz, z1 + pan.at[1] - vz, y0 + pan.at[0] - vy, y1 + pan.at[0] - vy);
+        drawMap(); return;
+      }
+      const [vy, vz] = mapAt(e);
+      if(drag) { moveV0(vy + grab[0], vz + grab[1]); return; }
+      cvMap.style.cursor = nearV0(e) ? "move" : "grab";
+      hoverMap = [vy, vz]; setProbe(); drawMap(); drawQ();
+    });
+    const endDrag = e => { drag = false; pan = null; cvMap.style.cursor = mapFr && nearV0(e) ? "move" : "grab"; };
+    cvMap.addEventListener("pointerup", endDrag); cvMap.addEventListener("pointercancel", endDrag);
+    cvMap.addEventListener("pointerleave", () => { if(drag || pan) return; hoverMap = null; setProbe(); drawMap(); drawQ(); });
+    // trace: hover probes a tick, click pins it, double click unpins
+    let pinned = false;
+    const trTick = e => { const r = cvTr.getBoundingClientRect(); return Math.max(0, Math.min(st.n - 1, Math.floor(trFr.ix(e.clientX - r.left)))); };
+    cvTr.addEventListener("pointermove", e => { if(!trFr || pinned) return; probeTick = trTick(e); setProbe(); drawAll(); });
+    cvTr.addEventListener("click", e => { pinned = !pinned; probeTick = trTick(e); setProbe(); drawAll(); });
+    cvTr.addEventListener("pointerleave", () => { if(pinned) return; probeTick = null; setProbe(); drawAll(); });
+    let rz = 0; new ResizeObserver(() => { cancelAnimationFrame(rz); rz = requestAnimationFrame(() => M && drawAll()); }).observe(root);
+
+    // for checking against pumpdp from the console
+    window.dpx = { model, fly, argmax, Q, midGap, RUNS, PS, get M() { return M; } };
+    await setModel();
+  })();
+  </script>
+</div>
