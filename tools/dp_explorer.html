@@ -369,7 +369,8 @@
       if(t != null) for(const [Fl, col] of lines()) if(t < Fl.vy.length) {
         c.beginPath(); c.arc(fx(Fl.vz[t]), fy(Fl.vy[t]), 4, 0, 7); c.fillStyle = col; c.fill(); c.strokeStyle = T.bg; c.lineWidth = 1.5; c.stroke();
       }
-      if(probe) for(const [w, col] of [[4, T.bg], [2, T.rate]]) { c.strokeStyle = col; c.lineWidth = w; c.beginPath(); c.arc(fx(probe[1]), fy(probe[0]), 7, 0, 7); c.stroke(); }
+      // a ring only for a bare hovered point: a tick has its dots, and v0 its own marker
+      if(hoverMap) for(const [w, col] of [[4, T.bg], [2, T.rate]]) { c.strokeStyle = col; c.lineWidth = w; c.beginPath(); c.arc(fx(hoverMap[1]), fy(hoverMap[0]), 7, 0, 7); c.stroke(); }
       c.restore(); fr.axes();
       drawMapKey(fr);
     }
