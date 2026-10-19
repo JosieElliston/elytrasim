@@ -406,7 +406,7 @@
       const [vy, vz] = probe;
       // Q against pitch
       const qs = (MM) => { const a = new Float64Array(NP); let mx = -Infinity; for(let i=0;i<NP;i++) { a[i] = Q(MM, vy, vz, SL[i], SU[i]); mx = Math.max(mx, a[i]); } for(let i=0;i<NP;i++) a[i] -= mx; return a; };
-      const q = qs(M), q1 = st.ghost && M !== M1 ? qs(M1) : null;
+      const q = qs(M), q1 = M !== M1 ? qs(M1) : null;
       let lo = 0; for(const a of [q, q1]) if(a) for(let i=0;i<NP;i++) lo = Math.min(lo, a[i]);
       // zoomed to the top: the bangs' competition is ~1e-3, the full range ~0.5
       lo = Math.max(lo, -Math.max(0.004, 3*Math.abs(Q(M, vy, vz, SL[I0], 0) - Q(M, vy, vz, LMIN, 0))));
