@@ -84,8 +84,7 @@
       <option value="gap">Q midpoint gap in lift (dive branch)</option>
       <option value="dp">pitch − pitch in the game</option>
     </select></div>
-    <div class="row wide"><label for="dx-zoom">zoom</label><button id="dx-zoom" type="button">reset to the whole cycle</button></div>
-    <div class="row"><label for="dx-n">ticks</label><input id="dx-n" type="range" min="50" max="3000" step="10"><output id="dx-n-o"></output></div>
+    <div class="row"><label for="dx-n">ticks</label><input id="dx-n" type="range" min="0" max="600" step="10"><output id="dx-n-o"></output></div>
     <div class="row"><label for="dx-vz">v<sub>z</sub>0</label><input id="dx-vz" type="range" min="0" max="2.7" step="0.001"><input id="dx-vz-t" type="text" aria-label="v0's vz"></div>
     <div class="row"><label for="dx-vy">v<sub>y</sub>0</label><input id="dx-vy" type="range" min="-1" max="2" step="0.001"><input id="dx-vy-t" type="text" aria-label="v0's vy"></div>
     <label class="check"><input id="dx-ghost" type="checkbox"> also show the game (faded)</label>
@@ -256,6 +255,10 @@
     if(!(st.fi >= 0 && st.fi < RUNS.length)) st.fi = I1;
     if(!FAM[st.knob]) st.knob = "f";
     if(!FAM[st.knob].includes(st.fi)) st.fi = I1;
+    // each knob remembers its own run, so switching knobs and back keeps the slider where it was
+    if(!(st.pick && FAM.f.includes(st.pick.f) && FAM.k.includes(st.pick.k))) st.pick = { f: I1, k: I1 };
+    st.pick[st.knob] = st.fi;
+    st.n = Math.min(600, Math.max(0, st.n));
     const save = () => { try { localStorage.setItem("dp-explorer-1", JSON.stringify(st)); } catch(e) {} };
     let M = null, M1 = null, F = null, F1 = null, probe = null, probeTick = null, hoverMap = null, mapImg = null;
 
@@ -388,7 +391,7 @@
       if(ends) { c.textAlign = "left"; c.fillText(ends[0], x - 2, top + 5); c.fillText(ends[1], x - 2, top + bh - 4); }
     }
     function drawTrace() {
-      const n = F ? F.p.length : 1;
+      const n = Math.max(1, F ? F.p.length : 1);
       const fr = trFr = frame(cvTr, 0, n, -92, 92, { flip: true, xl: "tick", yl: "pitch (nose up ↑)" }), { c, fx, fy } = fr;
       fr.clip();
       c.strokeStyle = T.rule; c.beginPath(); c.moveTo(fx(0), fy(0)); c.lineTo(fx(n), fy(0)); c.stroke();
@@ -453,8 +456,8 @@
       F = fly(M, st.vy0, st.vz0, st.n, st.gphys ? M1 : M);
       F1 = M === M1 ? F : fly(M1, st.vy0, st.vz0, st.n);
       const rv = reversals(F.p, 10), rv1 = reversals(F1.p, 10);
-      const rate = (F.te[st.n] - F.te[0])/st.n*20, rate1 = (F1.te[st.n] - F1.te[0])/st.n*20;
-      $q("#dx-trread").textContent = (st.gphys && M !== M1 ? "on the game's physics, " : "") + `${fint(st.n, 4)} ticks: ${fint(rv, 4)} reversals (${(1000*rv/st.n).toFixed(1).padStart(5)} per 1000), ${fint(reversals(F.p, 40), 4)} over 40°; ΔTE ${fnum(rate, 4)} b/s` + (M !== M1 ? `   game: ${fint(rv1, 4)}, ${fnum(rate1, 4)} b/s` : "");
+      const per = st.n ? 1/st.n : NaN, rate = (F.te[st.n] - F.te[0])*per*20, rate1 = (F1.te[st.n] - F1.te[0])*per*20;
+      $q("#dx-trread").textContent = (st.gphys && M !== M1 ? "on the game's physics, " : "") + `${fint(st.n, 4)} ticks: ${fint(rv, 4)} reversals (${(st.n ? (1000*rv/st.n).toFixed(1) : "—").padStart(5)} per 1000), ${fint(reversals(F.p, 40), 4)} over 40°; ΔTE ${fnum(rate, 4)} b/s` + (M !== M1 ? `   game: ${fint(rv1, 4)}, ${fnum(rate1, 4)} b/s` : "");
       if(probeTick != null && probeTick >= st.n) probeTick = null;
       setProbe();
     }
@@ -513,13 +516,13 @@
       const fam = FAM[st.knob];
       fIn.max = fam.length - 1; fIn.value = fam.indexOf(st.fi); knobIn.value = st.knob;
       $q("#dx-f-l").textContent = st.knob;
+      $q("#dx-f-o").textContent = st.knob === "k" ? RUNS[st.fi].k : RUNS[st.fi].f;
     }
-    fIn.addEventListener("input", () => { st.fi = FAM[st.knob][+fIn.value]; $q("#dx-f-o").textContent = st.knob === "k" ? RUNS[st.fi].k : RUNS[st.fi].f; save(); setModel(); });
-    knobIn.addEventListener("change", () => { st.knob = knobIn.value; if(!FAM[st.knob].includes(st.fi)) st.fi = I1; syncKnob(); save(); setModel(); });
+    fIn.addEventListener("input", () => { st.fi = st.pick[st.knob] = FAM[st.knob][+fIn.value]; $q("#dx-f-o").textContent = st.knob === "k" ? RUNS[st.fi].k : RUNS[st.fi].f; save(); setModel(); });
+    knobIn.addEventListener("change", () => { st.knob = knobIn.value; st.fi = st.pick[st.knob]; syncKnob(); save(); setModel(); });
     syncKnob();
     const sel = (id, key, fn) => { const el = $q(id); el.value = st[key]; el.addEventListener("change", () => { st[key] = el.value; save(); fn(); }); };
     sel("#dx-layer", "layer", setLayer);
-    $q("#dx-zoom").addEventListener("click", () => { setView(...CYCLE); drawMap(); });
     const nIn = $q("#dx-n"); nIn.value = st.n; $q("#dx-n-o").textContent = st.n;
     nIn.addEventListener("input", () => { st.n = +nIn.value; $q("#dx-n-o").textContent = st.n; save(); refly(); drawAll(); });
     for(const [id, key] of [["#dx-ghost", "ghost"]]) { const el = $q(id); el.checked = st[key]; el.addEventListener("change", () => { st[key] = el.checked; save(); refly(); drawAll(); }); }
