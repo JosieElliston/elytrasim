@@ -249,6 +249,50 @@ single-cycle answer is worst, and nothing where it is already good.
 A `--steady` profile closes exactly, which is checkable from the file alone and is the point:
 `examples/repeat` on one reads `sum|dv| 0.0000` on every lap.
 
+## Horizon effects
+
+A one-lap polish leaves `v_n` free, so it is greedy at the end of the lap. It spends the next
+lap's setup on height. That bias is large and depends on where the lap is cut. Any comparison
+of one-lap `dTE` against a long-horizon answer (a `pumpdp` cycle, a steady state, or another
+lap length) has to remove it first.
+
+These measurements are as of 2026-10-18. They use `libm` trig, `--limit 89` and no price,
+against the `pumpdp` disc3000 cycle (253 ticks, 19.7497 blocks per lap).
+
+**Where to cut.**
+- Cut at the cycle's detrended-TE peak: the last 0-degree tick before the pushover. There a
+  one-lap polish gains only +0.16 blocks over the cycle.
+- Cut mid-climb and it gains up to +40 blocks, measured every 12 ticks of phase.
+- So never compare one-lap numbers across cuts.
+
+**What the end effect is.**
+- Start from the same state 50 ticks before the end. From there the free end holds the nose up
+  to 12 degrees higher than the long-horizon tail. The long-horizon tail eases to 0 instead,
+  which turns off the forward-to-up conversion.
+- The free end finishes 0.18 blocks higher. Its final velocity is rotated upward
+  (`vz` -0.022, `vy` +0.020) at about the same speed (-2%).
+- So it trades the horizontal speed that the next pushover needs for height.
+
+**Removing it.**
+- **Unroll.** Polish two laps back to back and keep the first. Its last 50 ticks match the
+  `pumpdp` cycle within 1.4 degrees, and it ends 0.006 b/t from its start. The second lap takes
+  the end effect.
+- **Tie.** `examples/tied` keeps one lap's pitches and scores them flown `k` times. This only
+  dilutes the end effect: the last-50 pitch gap is 5.5, 2.3 and 0.54 degrees at `k` = 2, 4 and
+  8. Every copy still pays for the last copy's greed, so prefer unrolling when the question is
+  about the schedule itself.
+- **`--steady` does not remove it.** It closes the lap but keeps the free-end objective: it
+  flies 19.60 blocks per lap, against 19.75 for the cycle it was seeded from.
+
+**Compare late effects from a shared state.** Two schedules that each start from `v0` also
+differ earlier in the lap. The free polish smooths the DP's grid aliasing in the dive, and that
+alone moves 0.4-0.9 blocks between height and KE by mid-lap. Read per-tick TE differences
+against a common state, or that difference gets credited to the horizon.
+
+For scale, the real gain over the DP cycle, after smoothing its aliasing, is small. The `k` = 8
+tied lap, flown repeatedly, settles at 19.7622 blocks per lap (1.5622 b/s), against 19.7497
+(1.5612 b/s) for the cycle.
+
 ## Portability
 
 Vanilla's `Mth` sin LUT is ported and selectable with `--trig`, which removes the f32 trig
