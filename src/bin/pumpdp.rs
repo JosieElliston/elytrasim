@@ -42,6 +42,10 @@ use rayon::prelude::*;
 const GRAVITY: f64 = 0.08;
 const DRAG_Y: f64 = 0.98_f32 as f64;
 const DRAG_Z: f64 = 0.99_f32 as f64;
+/// `--conv-curv`, set once in `main`; 1 is the real physics. See `step`.
+static CONV_CURV: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+/// `--conv-lift-exp`, set once in `main`; 1 is the real physics. See `step`.
+static CONV_EXP: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
 
 #[derive(Clone, Copy, PartialEq, ValueEnum, Debug)]
 enum Mode { Disc, Avg }
@@ -107,6 +111,28 @@ struct Args {
     /// Pitch clamp, degrees either way. Minecraft's is 90; `field` uses 89, the sweeps 85.
     #[arg(long, default_value_t = 89.0)]
     limit: f64,
+    /// Ablation, not physics: scales the `lift^2` coefficient of the descent-to-forward conversion
+    /// (`-0.1 * 0.75 * GRAVITY`, from the gravity relief inside the conversion's amount) while
+    /// holding the conversion's value at lift 0 and 1, so both bang outcomes are unchanged and
+    /// only interior pitches move. That term is the only thing making a dive tick's outcome
+    /// concave in lift; 0 makes the dive's kernel affine in lift, above 1 more concave. 1 is
+    /// vanilla.
+    #[arg(long, default_value_t = 1.0)]
+    conv_curv: f64,
+    /// Ablation, not physics: the conversion's outer lift factor becomes lift^k, so
+    /// `conv = -0.1 * lift^k * vy_grav`, with the gravity relief inside `vy_grav` left alone. Both
+    /// ends are held (lift 1 exactly; at the 89° clamp lift is 3e-4 and lift^k moves it a little).
+    /// Unlike `--conv-curv`, the change scales with the fall speed. k < 1 converts more at interior
+    /// pitches, k > 1 less. 1 is vanilla.
+    #[arg(long, default_value_t = 1.0)]
+    conv_lift_exp: f64,
+    /// Ablation of the objective, not the physics: every backup is charged
+    /// `s / (2 GRAVITY) * |v' - c|^2`, `c` the mean next state over the `--fine` pitches from that
+    /// state (the middle of the tick's reachable arc), so `s` is in units of KE's own curvature.
+    /// It adds concavity to `r + γ V(v')` along the arc. q1, the flight's TE and its rate stay true
+    /// ΔTE. 0 is vanilla.
+    #[arg(long, default_value_t = 0.0)]
+    obj_concavity: f64,
     #[arg(long)]
     out: String,
 }
@@ -117,7 +143,10 @@ fn step(vy: f64, vz: f64, (lift, up_sin): (f64, f64)) -> (f64, f64) {
     let move_hor = vz.abs();
     let mut y = vy + GRAVITY * (-1.0 + lift * 0.75);
     let mut z = vz;
-    let conv = if y < 0.0 { y * -0.1 * lift } else { 0.0 };
+    let f = *CONV_CURV.get().unwrap_or(&1.0);
+    let k = *CONV_EXP.get().unwrap_or(&1.0);
+    let outer = if k == 1.0 { lift } else { lift.powf(k) };
+    let conv = if y < 0.0 { y * -0.1 * outer + (f - 1.0) * 0.1 * 0.75 * GRAVITY * lift * (1.0 - lift) } else { 0.0 };
     y += conv;
     z += conv;
     let up = move_hor * up_sin * 0.04;
@@ -169,12 +198,20 @@ impl Grid {
     }
 }
 
-/// One tick from (vy, vz) at a pitch: the clamped next state's cell and the tick's reward.
+/// One tick from (vy, vz) at a pitch: the clamped next state's cell, the tick's reward, and the
+/// `--obj-concavity` charge `s` (already scaled) against the arc's middle `ctr`.
 #[inline]
-fn transition(g: &Grid, vy: f64, vz: f64, t: (f64, f64)) -> (Cell, f64) {
+fn transition(g: &Grid, vy: f64, vz: f64, t: (f64, f64), s: f64, ctr: (f64, f64)) -> (Cell, f64, f64) {
     let (ny, nz) = step(vy, vz, t);
     let (cy, cz) = g.clamp(ny, nz);
-    (g.cell(ny, nz), ny + ke(cy, cz) - ke(vy, vz))
+    let pen = if s == 0.0 { 0.0 } else { s * ((ny - ctr.0).powi(2) + (nz - ctr.1).powi(2)) };
+    (g.cell(ny, nz), ny + ke(cy, cz) - ke(vy, vz), pen)
+}
+
+/// The middle of the tick's reachable arc from (vy, vz): the mean next state over `ts`.
+fn arc_mid(vy: f64, vz: f64, ts: &[(f64, f64)]) -> (f64, f64) {
+    let (y, z) = ts.iter().fold((0.0, 0.0), |(y, z), &t| { let (a, b) = step(vy, vz, t); (y + a, z + b) });
+    (y / ts.len() as f64, z / ts.len() as f64)
 }
 
 fn write_npy(path: &std::path::Path, shape: &[usize], data: &[f64]) {
@@ -197,6 +234,8 @@ fn main() {
     let a = Args::parse();
     let Args { mode, discount, tau, dv, vymin, vymax, vzmax, dp, evals, sweeps, tol, fine, gap, every, limit, .. } = a;
     assert!(tau > 0.0 && tau <= 1.0);
+    CONV_CURV.set(a.conv_curv).unwrap();
+    CONV_EXP.set(a.conv_lift_exp).unwrap();
     let jy0 = (-vymin / dv).round() as usize;
     let g = Grid { vy0: -(jy0 as f64) * dv, dv, ny: jy0 + (vymax / dv).round() as usize + 1, nz: (vzmax / dv).round() as usize + 1 };
     let pitches = |d: f64| -> Vec<f64> {
@@ -206,6 +245,11 @@ fn main() {
     };
     let ps = pitches(dp);
     let ts: Vec<(f64, f64)> = ps.iter().map(|&p| trig(p)).collect();
+    let fps = pitches(fine);
+    let fts: Vec<(f64, f64)> = fps.iter().map(|&p| trig(p)).collect();
+    let sc = a.obj_concavity * 0.5 / GRAVITY;
+    let mid = |vy: f64, vz: f64| if sc == 0.0 { (0.0, 0.0) } else { arc_mid(vy, vz, &fts) };
+    let mids: Vec<(f64, f64)> = (0..g.len()).into_par_iter().map(|n| { let (vy, vz) = g.node(n); mid(vy, vz) }).collect();
     let (gam, damp) = match mode { Mode::Disc => (discount, 1.0), Mode::Avg => (1.0, tau) };
     let rc = g.cell(a.r#ref[0], a.r#ref[1]);
     eprintln!("{mode:?}: grid {} x {} = {} nodes (dv {dv}, vy {:.2}..{vymax}, vz 0..{vzmax}), {} pitches; {}",
@@ -222,9 +266,9 @@ fn main() {
             let (vy, vz) = g.node(n);
             let mut top = (f64::NEG_INFINITY, Cell::default(), 0.0);
             for &t in &ts {
-                let (c, r) = transition(&g, vy, vz, t);
-                let q = r + gam * g.read(&v, c);
-                if q > top.0 { top = (q, c, r) }
+                let (c, r, pen) = transition(&g, vy, vz, t, sc, mids[n]);
+                let q = r - pen + gam * g.read(&v, c);
+                if q > top.0 { top = (q, c, r - pen) }
             }
             top
         }).collect();
@@ -253,13 +297,12 @@ fn main() {
     }
 
     // The policy on the fine grid, its margin, and its flight.
-    let fps = pitches(fine);
-    let fts: Vec<(f64, f64)> = fps.iter().map(|&p| trig(p)).collect();
     let rank = |vy: f64, vz: f64| -> (usize, f64, f64) {
-        let q: Vec<f64> = fts.iter().map(|&t| { let (c, r) = transition(&g, vy, vz, t); r + gam * g.read(&v, c) }).collect();
+        let m = mid(vy, vz);
+        let q: Vec<f64> = fts.iter().map(|&t| { let (c, r, pen) = transition(&g, vy, vz, t, sc, m); r - pen + gam * g.read(&v, c) }).collect();
         let i = (0..q.len()).fold(0, |a, i| if q[i] > q[a] { i } else { a });
         let alt = (0..q.len()).filter(|&j| (fps[j] - fps[i]).abs() > gap).map(|j| q[j]).fold(f64::NEG_INFINITY, f64::max);
-        (i, q[i] - alt, transition(&g, vy, vz, fts[i]).1)
+        (i, q[i] - alt, transition(&g, vy, vz, fts[i], 0.0, m).1)
     };
     let map: Vec<(usize, f64, f64)> = (0..g.len()).into_par_iter().map(|n| { let (vy, vz) = g.node(n); rank(vy, vz) }).collect();
 
@@ -302,10 +345,13 @@ fn main() {
         Mode::Avg => format!("avg tau {tau}"),
     };
     let summary = format!(
-        "pumpdp {objective} limit {limit}\ngrid dv {dv} vy {}..{vymax} vz 0..{vzmax} ({} x {}) dp {dp} evals {evals} fine {fine} gap {gap}\n\
+        "pumpdp {objective} limit {limit}{}\ngrid dv {dv} vy {}..{vymax} vz 0..{vzmax} ({} x {}) dp {dp} evals {evals} fine {fine} gap {gap}\n\
          ref {:?} v0 {:?}\nsweeps {done} tol {tol}\nbracket (min, max of Tv - v) {:.8} {:.8}\n\
          period {} ticks\nflown rate over last {w} ticks {flown:.6} b/tick ({:.4} b/s); first half of that window {half:.6}; clamped ticks {clamped}\n\
          time {:.0}s\n",
+        format!("{}{}", if a.conv_curv == 1.0 { String::new() } else { format!(" conv_curv {}", a.conv_curv) },
+                if a.conv_lift_exp == 1.0 { String::new() } else { format!(" conv_lift_exp {}", a.conv_lift_exp) })
+            + &if a.obj_concavity == 0.0 { String::new() } else { format!(" obj_concavity {}", a.obj_concavity) },
         g.vy0, g.ny, g.nz, a.r#ref, a.v0, rate.0, rate.1, period.map_or("none".to_string(), |p| p.to_string()), flown * 20.0, clock.elapsed().as_secs_f64());
     std::fs::write(out.join("spec.txt"), &summary).unwrap();
     print!("{summary}");
