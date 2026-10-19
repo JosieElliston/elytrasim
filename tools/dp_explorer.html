@@ -259,7 +259,7 @@
     st.pick[st.knob] = st.fi;
     st.n = Math.min(600, Math.max(0, st.n));
     const save = () => { try { localStorage.setItem("dp-explorer-1", JSON.stringify(st)); } catch(e) {} };
-    let M = null, M1 = null, F = null, F1 = null, FG = null, probe = null, probeTick = null, hoverMap = null, mapImg = null;
+    let M = null, M1 = null, F = null, F1 = null, FG = null, probe = null, probeTick = null, mapTick = null, hoverMap = null, mapImg = null;
 
     // the map's view, [vz0, vz1, vy0, vy1]: the wheel zooms it, shift- or right-drag pans it, kept inside the crop
     const CYCLE = [0, 2.6, -0.95, 1.9];
@@ -365,6 +365,10 @@
       }
       arrow(c, fx(st.vz0), fy(st.vy0), F && F.p.length ? F.p[0] : PS[argmax(M, st.vy0, st.vz0)]);
       c.beginPath(); c.arc(fx(st.vz0), fy(st.vy0), 5, 0, 7); c.fillStyle = "#ffffff"; c.fill(); c.strokeStyle = T.bg; c.lineWidth = 1.5; c.stroke();
+      const t = curTick();
+      if(t != null) for(const [Fl, col] of lines()) if(t < Fl.vy.length) {
+        c.beginPath(); c.arc(fx(Fl.vz[t]), fy(Fl.vy[t]), 4, 0, 7); c.fillStyle = col; c.fill(); c.strokeStyle = T.bg; c.lineWidth = 1.5; c.stroke();
+      }
       if(probe) for(const [w, col] of [[4, T.bg], [2, T.rate]]) { c.strokeStyle = col; c.lineWidth = w; c.beginPath(); c.arc(fx(probe[1]), fy(probe[0]), 7, 0, 7); c.stroke(); }
       c.restore(); fr.axes();
       drawMapKey(fr);
@@ -417,7 +421,13 @@
       if(st.ghost && F1 && M !== M1) tr(F1, T.faint, 0.9, 1);
       if(FG) tr(FG, T.ke, 0.7, 1);
       tr(F, T.fly, 1, 1.1);
-      if(probeTick != null) { c.strokeStyle = T.rate; c.lineWidth = 1; c.beginPath(); c.moveTo(fx(probeTick + 0.5), fr.m.t); c.lineTo(fx(probeTick + 0.5), fr.H - fr.m.b); c.stroke(); }
+      const t = curTick();
+      if(t != null) {
+        c.strokeStyle = T.rate; c.lineWidth = 1; c.beginPath(); c.moveTo(fx(t + 0.5), fr.m.t); c.lineTo(fx(t + 0.5), fr.H - fr.m.b); c.stroke();
+        for(const [Fl, , col] of lines()) if(t < Fl.p.length) {
+          c.beginPath(); c.arc(fx(t + 0.5), fy(Fl.p[t]), 3.5, 0, 7); c.fillStyle = col; c.fill(); c.strokeStyle = T.bg; c.lineWidth = 1.2; c.stroke();
+        }
+      }
       c.restore(); fr.axes();
     }
     function drawQ() {
@@ -466,7 +476,7 @@
         ["midpoint gap", fexp(midGap(M, vy, vz)), fexp(midGap(M1, vy, vz))], ["Q(0) − Q(89)", fexp(Q(M, vy, vz, SL[I0], 0) - Q(M, vy, vz, LMIN, 0)), fexp(Q(M1, vy, vz, SL[I0], 0) - Q(M1, vy, vz, LMIN, 0))],
         ["γ (climb angle)", fnum(Math.atan2(vy, vz)*180/Math.PI, 2, 6) + "°", ""]];
       $q("#dx-read").innerHTML = rows.map(r => `<tr><td>${r[0]}</td><td class="v">${r[1]}</td><td class="v f1">${r[2]}</td></tr>`).join("");
-      $q("#dx-ph").textContent = hoverMap ? "at the hovered point" : probeTick != null ? `at tick ${probeTick} of the flight` : "at v0";
+      $q("#dx-ph").textContent = mapTick ? `at tick ${mapTick.t} of the ${mapTick.name}` : hoverMap ? "at the hovered point" : probeTick != null ? `at tick ${probeTick} of the flight` : "at v0";
     }
     function drawAll() { drawMap(); drawTrace(); drawQ(); }
 
@@ -480,10 +490,17 @@
       $q("#dx-trread").textContent = `${fint(st.n, 4)} ticks: ${fint(rv, 4)} reversals (${(st.n ? (1000*rv/st.n).toFixed(1) : "—").padStart(5)} per 1000), ${fint(reversals(F.p, 40), 4)} over 40°; ΔTE ${fnum(rate, 4)} b/s` + (M !== M1 ? `   game: ${fint(rv1, 4)}, ${fnum(rate1, 4)} b/s` : "")
         + (FG ? `   on unablated physics: ${fint(reversals(FG.p, 10), 4)}, ${fnum((FG.te[st.n] - FG.te[0])*per*20, 4)} b/s` : "");
       if(probeTick != null && probeTick >= st.n) probeTick = null;
+      mapTick = null;
       setProbe();
     }
+    // the flights drawn, main first, with their colors on the map and the trace
+    const lines = () => [[F, "#ffffff", T.fly, "flight"], ...(st.ghost && F1 && M !== M1 ? [[F1, T.muted, T.faint, "unablated flight"]] : []),
+                         ...(FG ? [[FG, T.ke, T.ke, "flight on unablated physics"]] : [])].filter(l => l[0]);
+    // the highlighted tick: hovered on the map (snapped to the nearest flown tick), else hovered or pinned on the trace
+    const curTick = () => mapTick ? mapTick.t : probeTick;
     function setProbe() {
-      probe = hoverMap ? hoverMap : probeTick != null && F ? [F.vy[probeTick], F.vz[probeTick]] : [st.vy0, st.vz0];
+      const L = mapTick ? mapTick.line : F;
+      probe = mapTick ? [L.vy[mapTick.t], L.vz[mapTick.t]] : hoverMap ? hoverMap : probeTick != null && F ? [F.vy[probeTick], F.vz[probeTick]] : [st.vy0, st.vz0];
     }
     // M's policy on P's physics from the reference start: the last period of an 8000-tick flight,
     // the period being the first return within 1e-5 b/t (pumpdp's test); else its last 1000 ticks
@@ -566,7 +583,7 @@
     const mapAt = e => { const r = cvMap.getBoundingClientRect(); return [mapFr.iy(e.clientY - r.top), mapFr.ix(e.clientX - r.left)]; };
     cvMap.addEventListener("contextmenu", e => e.preventDefault());
     cvMap.addEventListener("pointerdown", e => {
-      cvMap.setPointerCapture(e.pointerId); hoverMap = null;
+      cvMap.setPointerCapture(e.pointerId); hoverMap = null; mapTick = null;
       // grabbing v0's dot moves v0, anything else pans; v0 doesn't jump to the pointer
       if(e.button !== 0 || !nearV0(e)) { pan = { at: mapAt(e), view: st.view.slice() }; cvMap.style.cursor = "grabbing"; return; }
       drag = true; probeTick = null; const [vy, vz] = mapAt(e); grab = [st.vy0 - vy, st.vz0 - vz];
@@ -594,11 +611,22 @@
       const [vy, vz] = mapAt(e);
       if(drag) { moveV0(vy + grab[0], vz + grab[1]); return; }
       cvMap.style.cursor = nearV0(e) ? "move" : "grab";
-      hoverMap = [vy, vz]; setProbe(); drawMap(); drawQ();
+      const r = cvMap.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+      // the main flight wins whenever one of its ticks is in reach; the faded lines only otherwise
+      let best = null;
+      for(const [Fl, , , name] of lines()) {
+        let bd = 8;
+        for(let t=0;t<Fl.p.length;t++) {
+          const d = Math.hypot(mapFr.fx(Fl.vz[t]) - px, mapFr.fy(Fl.vy[t]) - py);
+          if(d < bd) { bd = d; best = { t, line: Fl, name }; }
+        }
+        if(best) break;
+      }
+      mapTick = best; hoverMap = best ? null : [vy, vz]; setProbe(); drawAll();
     });
     const endDrag = e => { drag = false; pan = null; cvMap.style.cursor = mapFr && nearV0(e) ? "move" : "grab"; };
     cvMap.addEventListener("pointerup", endDrag); cvMap.addEventListener("pointercancel", endDrag);
-    cvMap.addEventListener("pointerleave", () => { if(drag || pan) return; hoverMap = null; setProbe(); drawMap(); drawQ(); });
+    cvMap.addEventListener("pointerleave", () => { if(drag || pan) return; hoverMap = null; mapTick = null; setProbe(); drawAll(); });
     // trace: hover probes a tick, click pins it, double click unpins
     let pinned = false;
     const trTick = e => { const r = cvTr.getBoundingClientRect(); return Math.max(0, Math.min(st.n - 1, Math.floor(trFr.ix(e.clientX - r.left)))); };
@@ -608,7 +636,7 @@
     let rz = 0; new ResizeObserver(() => { cancelAnimationFrame(rz); rz = requestAnimationFrame(() => M && drawAll()); }).observe(root);
 
     // for checking against pumpdp from the console
-    window.dpx = { model, fly, argmax, Q, midGap, RUNS, PS, get M() { return M; } };
+    window.dpx = { model, fly, argmax, Q, midGap, RUNS, PS, get M() { return M; }, get F() { return F; }, get mapFr() { return mapFr; } };
     await setModel();
   })();
   </script>
