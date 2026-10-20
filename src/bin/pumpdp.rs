@@ -10,6 +10,15 @@
 //!   optimal flight and by no more under any other pitch, so one-tick greedy on `TE + h` is the
 //!   optimal policy.
 //!
+//! `--lambda` adds `w dz` to every tick's reward, `dz` its forward distance and `w` the sweeps'
+//! `w_of_lambda`, so over n ticks the reward sums to their `J = TE(s_n) + w z_n`. On a cycle KE
+//! comes back, so the mean ΔTE is the mean climb, and `avg` then maximizes `climb + w forward` per
+//! tick: the Lagrangian of the fastest forward flight that climbs at least some rate. Sweeping
+//! lambda from 0 (the gain-rate pump) up traces the upper convex hull of (forward speed, climb
+//! rate) over all flights; the lambda whose flight climbs 0 is the fastest sustained level flight.
+//! Speeds on a non-convex stretch of the frontier are reachable only by alternating two cycles,
+//! which a stationary policy can't do, and no lambda finds them.
+//!
 //! The state is velocity alone: the flight kernel reads nothing else, and ΔTE doesn't depend on
 //! height. `V`/`h` live on the nodes and are read between them bilinearly (semi-Lagrangian).
 //! A step leaving the grid is clamped onto its edge, and `r` is charged to the clamped state, so
@@ -37,6 +46,7 @@
 use std::io::Write;
 
 use clap::{Parser, ValueEnum};
+use elytrasim::opt::w_of_lambda;
 use rayon::prelude::*;
 
 const GRAVITY: f64 = 0.08;
@@ -133,6 +143,11 @@ struct Args {
     /// ΔTE. 0 is vanilla.
     #[arg(long, default_value_t = 0.0)]
     obj_concavity: f64,
+    /// Price on forward distance, normalized as in the sweeps: every tick's reward adds
+    /// `w_of_lambda(lambda)` times the clamped next state's `vz`, so a clamp only ever loses it.
+    /// 0 is the gain rate.
+    #[arg(long, default_value_t = 0.0)]
+    lambda: f64,
     #[arg(long)]
     out: String,
 }
@@ -198,14 +213,15 @@ impl Grid {
     }
 }
 
-/// One tick from (vy, vz) at a pitch: the clamped next state's cell, the tick's reward, and the
-/// `--obj-concavity` charge `s` (already scaled) against the arc's middle `ctr`.
+/// One tick from (vy, vz) at a pitch: the clamped next state's cell, the tick's reward (ΔTE plus
+/// `w` times the forward distance), and the `--obj-concavity` charge `s` (already scaled) against
+/// the arc's middle `ctr`.
 #[inline]
-fn transition(g: &Grid, vy: f64, vz: f64, t: (f64, f64), s: f64, ctr: (f64, f64)) -> (Cell, f64, f64) {
+fn transition(g: &Grid, vy: f64, vz: f64, t: (f64, f64), w: f64, s: f64, ctr: (f64, f64)) -> (Cell, f64, f64) {
     let (ny, nz) = step(vy, vz, t);
     let (cy, cz) = g.clamp(ny, nz);
     let pen = if s == 0.0 { 0.0 } else { s * ((ny - ctr.0).powi(2) + (nz - ctr.1).powi(2)) };
-    (g.cell(ny, nz), ny + ke(cy, cz) - ke(vy, vz), pen)
+    (g.cell(ny, nz), ny + ke(cy, cz) - ke(vy, vz) + w * cz, pen)
 }
 
 /// The middle of the tick's reachable arc from (vy, vz): the mean next state over `ts`.
@@ -247,6 +263,7 @@ fn main() {
     let ts: Vec<(f64, f64)> = ps.iter().map(|&p| trig(p)).collect();
     let fps = pitches(fine);
     let fts: Vec<(f64, f64)> = fps.iter().map(|&p| trig(p)).collect();
+    let w = w_of_lambda(a.lambda);
     let sc = a.obj_concavity * 0.5 / GRAVITY;
     let mid = |vy: f64, vz: f64| if sc == 0.0 { (0.0, 0.0) } else { arc_mid(vy, vz, &fts) };
     let mids: Vec<(f64, f64)> = (0..g.len()).into_par_iter().map(|n| { let (vy, vz) = g.node(n); mid(vy, vz) }).collect();
@@ -266,7 +283,7 @@ fn main() {
             let (vy, vz) = g.node(n);
             let mut top = (f64::NEG_INFINITY, Cell::default(), 0.0);
             for &t in &ts {
-                let (c, r, pen) = transition(&g, vy, vz, t, sc, mids[n]);
+                let (c, r, pen) = transition(&g, vy, vz, t, w, sc, mids[n]);
                 let q = r - pen + gam * g.read(&v, c);
                 if q > top.0 { top = (q, c, r - pen) }
             }
@@ -299,10 +316,10 @@ fn main() {
     // The policy on the fine grid, its margin, and its flight.
     let rank = |vy: f64, vz: f64| -> (usize, f64, f64) {
         let m = mid(vy, vz);
-        let q: Vec<f64> = fts.iter().map(|&t| { let (c, r, pen) = transition(&g, vy, vz, t, sc, m); r - pen + gam * g.read(&v, c) }).collect();
+        let q: Vec<f64> = fts.iter().map(|&t| { let (c, r, pen) = transition(&g, vy, vz, t, w, sc, m); r - pen + gam * g.read(&v, c) }).collect();
         let i = (0..q.len()).fold(0, |a, i| if q[i] > q[a] { i } else { a });
         let alt = (0..q.len()).filter(|&j| (fps[j] - fps[i]).abs() > gap).map(|j| q[j]).fold(f64::NEG_INFINITY, f64::max);
-        (i, q[i] - alt, transition(&g, vy, vz, fts[i], 0.0, m).1)
+        (i, q[i] - alt, transition(&g, vy, vz, fts[i], 0.0, 0.0, m).1)
     };
     let map: Vec<(usize, f64, f64)> = (0..g.len()).into_par_iter().map(|n| { let (vy, vz) = g.node(n); rank(vy, vz) }).collect();
 
@@ -310,6 +327,7 @@ fn main() {
     let mut te = 0.0;
     let mut rows = Vec::with_capacity(5 * a.fly);
     let mut tes = vec![ke(vy, vz)];
+    let mut zs = vec![0.0];
     let mut vs = vec![(vy, vz)];
     let mut clamped = 0;
     for t in 0..a.fly {
@@ -320,6 +338,7 @@ fn main() {
         te += ny;
         (vy, vz) = (ny, nz);
         tes.push(te + ke(vy, vz));
+        zs.push(zs[t] + nz);
         vs.push((vy, vz));
     }
     let w = a.window.min(a.fly);
@@ -328,6 +347,7 @@ fn main() {
     let w = period.map_or(w, |p| w / p * p);
     let flown = (tes[a.fly] - tes[a.fly - w]) / w as f64;
     let half = (tes[a.fly - w / 2] - tes[a.fly - w]) / (w / 2) as f64;
+    let fwd = (zs[a.fly] - zs[a.fly - w]) / w as f64;
 
     let out = std::path::Path::new(&a.out);
     std::fs::create_dir_all(out).unwrap();
@@ -343,16 +363,17 @@ fn main() {
     let objective = match mode {
         Mode::Disc => format!("disc discount {discount} horizon {:.1}", 1.0 / (1.0 - discount)),
         Mode::Avg => format!("avg tau {tau}"),
-    };
+    } + &if a.lambda == 0.0 { String::new() } else { format!(" lambda {} w {:.10}", a.lambda, w_of_lambda(a.lambda)) };
     let summary = format!(
         "pumpdp {objective} limit {limit}{}\ngrid dv {dv} vy {}..{vymax} vz 0..{vzmax} ({} x {}) dp {dp} evals {evals} fine {fine} gap {gap}\n\
          ref {:?} v0 {:?}\nsweeps {done} tol {tol}\nbracket (min, max of Tv - v) {:.8} {:.8}\n\
          period {} ticks\nflown rate over last {w} ticks {flown:.6} b/tick ({:.4} b/s); first half of that window {half:.6}; clamped ticks {clamped}\n\
+         flown forward speed over that window {fwd:.6} b/tick ({:.4} b/s)\n\
          time {:.0}s\n",
         format!("{}{}", if a.conv_curv == 1.0 { String::new() } else { format!(" conv_curv {}", a.conv_curv) },
                 if a.conv_lift_exp == 1.0 { String::new() } else { format!(" conv_lift_exp {}", a.conv_lift_exp) })
             + &if a.obj_concavity == 0.0 { String::new() } else { format!(" obj_concavity {}", a.obj_concavity) },
-        g.vy0, g.ny, g.nz, a.r#ref, a.v0, rate.0, rate.1, period.map_or("none".to_string(), |p| p.to_string()), flown * 20.0, clock.elapsed().as_secs_f64());
+        g.vy0, g.ny, g.nz, a.r#ref, a.v0, rate.0, rate.1, period.map_or("none".to_string(), |p| p.to_string()), flown * 20.0, fwd * 20.0, clock.elapsed().as_secs_f64());
     std::fs::write(out.join("spec.txt"), &summary).unwrap();
     print!("{summary}");
 }
