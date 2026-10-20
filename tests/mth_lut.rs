@@ -3,6 +3,17 @@
 //! tests check it is really that table, and really vanilla's indexing.
 
 use elytrasim::sim::*;
+use std::sync::{Mutex, MutexGuard};
+
+/// The trig mode is process-global and cargo runs a binary's tests on parallel threads, so every
+/// test that sets it holds this for its whole body. Otherwise
+/// `the_two_modes_disagree_and_libm_is_the_default` can flip the mode to libm mid-way through a
+/// test that expects the table.
+static MODES: Mutex<()> = Mutex::new(());
+
+fn hold_modes() -> MutexGuard<'static, ()> {
+    MODES.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// The table is built from `f64::sin`, so a platform whose libm rounded one entry differently
 /// would silently replay every profile in the sweep differently. This makes that a test failure
@@ -21,6 +32,7 @@ fn sin_table_is_bit_identical_everywhere() {
 /// porting caveat in README-myopic.md: at pitch -90 the lift force vanishes exactly.
 #[test]
 fn cos_of_minus_ninety_degrees_is_exactly_zero() {
+    let _modes = hold_modes();
     let x = -90.0f32 * (std::f64::consts::PI / 180.0) as f32;
     set_trig_mode(TrigMode::MthLut);
     assert_eq!(Mth::cos(x), 0.0, "Mth.cos(-90 deg) must be exactly 0");
@@ -32,6 +44,7 @@ fn cos_of_minus_ninety_degrees_is_exactly_zero() {
 /// would be looking at libm by mistake.
 #[test]
 fn lut_tracks_libm_to_within_one_step() {
+    let _modes = hold_modes();
     set_trig_mode(TrigMode::MthLut);
     let mut worst = 0.0f64;
     for i in -400_000..=400_000i32 {
@@ -52,6 +65,7 @@ fn lut_tracks_libm_to_within_one_step() {
 /// its two mirrored entries come from two different `f64::sin` arguments.
 #[test]
 fn negative_angles_index_from_the_top_of_the_table() {
+    let _modes = hold_modes();
     set_trig_mode(TrigMode::MthLut);
     for k in 1..20_000i32 {
         let x = k as f32 * 1e-4;
@@ -65,6 +79,7 @@ fn negative_angles_index_from_the_top_of_the_table() {
 /// numbers in README-myopic.md keep meaning what they say.
 #[test]
 fn the_two_modes_disagree_and_libm_is_the_default() {
+    let _modes = hold_modes();
     assert_eq!(TrigMode::default(), TrigMode::Libm);
     let r = Rot { x: 37.25, y: 0.0 };
     set_trig_mode(TrigMode::Libm);

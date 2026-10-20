@@ -1,4 +1,15 @@
 use elytrasim::sim::*;
+use std::sync::{Mutex, MutexGuard};
+
+/// The trig and flight modes are process-global and cargo runs a binary's tests on parallel
+/// threads, so every test that sets a mode holds this for its whole body. Without it one test
+/// flips the mode under another and `cached_pitch_terms_are_bit_identical_in_every_physics_mode`
+/// fails about 1 run in 10.
+static MODES: Mutex<()> = Mutex::new(());
+
+fn hold_modes() -> MutexGuard<'static, ()> {
+    MODES.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn next_u64(state: &mut u64) -> u64 {
     *state ^= *state << 13;
@@ -21,6 +32,7 @@ fn max_component_error(a: Vec3, b: Vec3) -> f64 {
 
 #[test]
 fn yaw_zero_algebra_matches_reference_in_both_trig_modes() {
+    let _modes = hold_modes();
     let mut rng = 0x72d2_19bb_047e_920d_u64;
     for trig in [TrigMode::Libm, TrigMode::MthLut] {
         set_trig_mode(trig);
@@ -55,6 +67,7 @@ fn yaw_zero_algebra_matches_reference_in_both_trig_modes() {
 
 #[test]
 fn cached_pitch_terms_are_bit_identical_in_every_physics_mode() {
+    let _modes = hold_modes();
     assert_eq!(std::mem::size_of::<PitchTrig>(), 16);
     let mut rng = 0xb438_0f5a_d17c_c923_u64;
     for trig in [TrigMode::Libm, TrigMode::MthLut] {
