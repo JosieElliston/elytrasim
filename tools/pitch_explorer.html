@@ -139,6 +139,8 @@
     // widened on one axis to the canvas's aspect. Kept apart so that resizing doesn't ratchet.
     let want = {x: VIEW0.x.slice(), y: VIEW0.y.slice()}, view = want;
     let hover = null;   // tick index into the trajectory, or null
+    // the tick to mark and read out: the hovered one, else the last; always the last while a drag edits the schedule
+    const shownTick = pts => hover !== null && !pdrag && drag !== "v0" ? hover : pts.length > 1 ? pts.length - 1 : null;
 
     const segPitch = (s, j) => s.n <= 1 ? s.a : s.a + (s.b - s.a)*j/(s.n - 1);
     function simulate() {
@@ -263,15 +265,11 @@
       for(let i=1;i<pts.length;i++) {
         ctx.beginPath(); ctx.arc(X(pts[i].vz), Y(pts[i].vy), 2, 0, Math.PI*2); ctx.fillStyle = color(pts[i].k); ctx.fill();
       }
-      // switch ticks (the last tick of a segment that a later one follows) and the end
-      ctx.strokeStyle = T.fg; ctx.lineWidth = 1.5;
-      for(let i=1;i<pts.length-1;i++) if(pts[i].k !== pts[i+1].k) { ctx.beginPath(); ctx.arc(X(pts[i].vz), Y(pts[i].vy), 4.5, 0, Math.PI*2); ctx.stroke(); }
-      const last = pts[pts.length-1]; if(pts.length > 1) { ctx.beginPath(); ctx.rect(X(last.vz)-4, Y(last.vy)-4, 8, 8); ctx.stroke(); }
+      ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.arc(X(S.vz), Y(S.vy), 5, 0, Math.PI*2); ctx.fillStyle = "#ffffff"; ctx.fill(); ctx.strokeStyle = T.bg; ctx.stroke();
-      if(hover !== null && pts[hover]) { const q = pts[hover]; ctx.beginPath(); ctx.arc(X(q.vz), Y(q.vy), 7, 0, Math.PI*2); ctx.strokeStyle = HOT; ctx.lineWidth = 2; ctx.stroke(); }
+      const ht = shownTick(pts);
+      if(ht !== null && pts[ht]) { const q = pts[ht]; ctx.beginPath(); ctx.arc(X(q.vz), Y(q.vy), 7, 0, Math.PI*2); ctx.strokeStyle = HOT; ctx.lineWidth = 2; ctx.stroke(); }
       ctx.restore();
-      ctx.textAlign = "left"; ctx.fillStyle = T.muted;
-      ctx.fillText("● v0   ○ switch   □ end", m.l + 6, m.t + 14);
     }
 
     // ---- flight path: height against distance, true scale, always fitted ----
@@ -312,11 +310,10 @@
         ctx.strokeStyle = color(pts[i].k);
         ctx.beginPath(); ctx.moveTo(X(pts[i-1].z), Y(pts[i-1].y)); ctx.lineTo(X(pts[i].z), Y(pts[i].y)); ctx.stroke();
       }
-      ctx.strokeStyle = T.fg; ctx.lineWidth = 1.5;
-      for(let i=1;i<pts.length-1;i++) if(pts[i].k !== pts[i+1].k) { ctx.beginPath(); ctx.arc(X(pts[i].z), Y(pts[i].y), 4.5, 0, Math.PI*2); ctx.stroke(); }
-      const last = pts[pts.length-1]; if(pts.length > 1) { ctx.beginPath(); ctx.rect(X(last.z)-4, Y(last.y)-4, 8, 8); ctx.stroke(); }
+      ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.arc(X(0), Y(0), 5, 0, Math.PI*2); ctx.fillStyle = "#ffffff"; ctx.fill(); ctx.strokeStyle = T.bg; ctx.stroke();
-      if(hover !== null && pts[hover]) { const q = pts[hover]; ctx.beginPath(); ctx.arc(X(q.z), Y(q.y), 7, 0, Math.PI*2); ctx.strokeStyle = HOT; ctx.lineWidth = 2; ctx.stroke(); }
+      const ht = shownTick(pts);
+      if(ht !== null && pts[ht]) { const q = pts[ht]; ctx.beginPath(); ctx.arc(X(q.z), Y(q.y), 7, 0, Math.PI*2); ctx.strokeStyle = HOT; ctx.lineWidth = 2; ctx.stroke(); }
       ctx.restore();
     }
     pathCv.addEventListener("pointermove", e => {
@@ -428,9 +425,10 @@
       ctx.save(); ctx.translate(11, m.t + bh/2); ctx.rotate(-Math.PI/2); ctx.fillText("pitch (°)", 0, 0); ctx.restore();
       ctx.strokeStyle = ZERO; ctx.setLineDash([3, 3]);
       ctx.beginPath(); ctx.moveTo(m.l, Y(0)); ctx.lineTo(m.l + bw, Y(0)); ctx.stroke(); ctx.setLineDash([]);
-      if(hover !== null && hover > 0) {
-        ctx.fillStyle = "rgba(255,255,255,.14)"; ctx.fillRect(X(hover-1), m.t, Math.max(1, X(hover) - X(hover-1)), bh);
-        ctx.strokeStyle = HOT; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(X(hover), m.t); ctx.lineTo(X(hover), m.t + bh); ctx.stroke();
+      const ht = shownTick(pts);
+      if(ht !== null && ht > 0) {
+        ctx.fillStyle = "rgba(255,255,255,.14)"; ctx.fillRect(X(ht-1), m.t, Math.max(1, X(ht) - X(ht-1)), bh);
+        ctx.strokeStyle = HOT; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(X(ht), m.t); ctx.lineTo(X(ht), m.t + bh); ctx.stroke();
       }
       // tick i applies its pitch over [i-1, i]; a riser joins each tick to the one before
       const active = pdrag || phover;
@@ -505,8 +503,7 @@
     const readEl = $q("#pe-read");
     const f = (v, d) => (v < 0 ? "−" : "") + Math.abs(v).toFixed(d);
     function renderRead(pts) {
-      // the hovered tick, else the last one
-      const q = hover !== null ? pts[hover] : pts.length > 1 ? pts[pts.length - 1] : null;
+      const ht = shownTick(pts), q = ht !== null ? pts[ht] : null;
       readEl.classList.toggle("idle", !q);
       if(!q) { readEl.textContent = "The schedule is empty."; return; }
       // every field is padded to its widest value over this schedule, so nothing shifts as the tick moves
@@ -595,7 +592,7 @@
       fieldCv.style.cursor = onV0(px, py) ? "grab" : "move";
       setHover(nearestTick(px, py));
     });
-    const endDrag = () => drag = null;
+    const endDrag = () => { const was = drag; drag = null; if(was === "v0") draw(); };
     fieldCv.addEventListener("pointerup", endDrag);
     fieldCv.addEventListener("pointercancel", endDrag);
     fieldCv.addEventListener("pointerleave", () => { if(!drag) setHover(null); });
