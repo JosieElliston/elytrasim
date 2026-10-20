@@ -1,0 +1,589 @@
+<!-- Template: tools/build_level_explorer.py embeds pumpdp's lambda-priced policy maps at the DATA marker and writes the page to runs/fwddp/. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Level flight policy</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: pump_explorer's. Controls, the limit cycle's numbers and the frontier in a left rail; the velocity plane beside the flight path, and the pitch strip below. Same single dark look. */
+  :root {
+    color-scheme: dark;
+    --bg: #14171a; --panel: #1b1f24; --line: #4a525c; --rule: #2b3138;
+    --fg: #e6e9ed; --muted: #b9c0c9;
+    --rate: #ffd166; --fwd: #ff9e7a; --fly: #56d4c0;
+    --ui: "Atkinson Hyperlegible", system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  html, body { height: 100%; margin: 0; background: var(--bg); }
+  #lvl { box-sizing: border-box; color: var(--fg); background: var(--bg); font: 14px var(--ui); padding-block: 14px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); height: 100%; overflow: hidden; display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 0 14px; }
+  #lvl * { box-sizing: border-box; }
+  #lvl h1 { font-size: 20px; font-weight: 700; margin: 0 0 4px; text-wrap: balance; }
+  #lvl .sub, #lvl .caption { color: var(--muted); margin: 0; font-size: 12.5px; line-height: 1.45; }
+  #lvl .left { min-width: 0; min-height: 0; overflow-y: auto; padding-right: 4px; display: flex; flex-direction: column; gap: 12px; }
+  #lvl .row { display: grid; grid-template-columns: 62px minmax(60px, 1fr) 66px; gap: 8px; align-items: center; font-size: 13px; }
+  #lvl label { color: var(--muted); }
+  #lvl input[type="range"] { width: 100%; accent-color: var(--fly); }
+  #lvl input[type="text"] { width: 100%; background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; font: 12px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+  #lvl button { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 8px; font: 12.5px var(--ui); cursor: pointer; }
+  #lvl button:hover { border-color: var(--fly); }
+  #lvl :focus-visible { outline: 2px solid var(--fly); outline-offset: 1px; }
+  #lvl table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  #lvl td { padding: 2px 0; border-bottom: 1px solid var(--rule); vertical-align: baseline; }
+  #lvl td:first-child { color: var(--muted); padding-right: 8px; }
+  #lvl td.v { text-align: right; font: 12px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #lvl .eyebrow { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; }
+  #lvl .right { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+  #lvl .top { flex: 1 1 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 8px; }
+  #lvl .stack { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+  #lvl .box { position: relative; min-height: 0; }
+  #lvl .box.pitch { flex: 0 0 26%; }
+  #lvl .box.front { height: 220px; cursor: pointer; }
+  #lvl canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 3px; }
+  #lvl #lv-field { cursor: crosshair; touch-action: none; }
+  #lvl #lv-zoom { cursor: move; touch-action: none; }
+  /* one line, so hovering never moves the pitch strip */
+  #lvl .readout { font: 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--fg); white-space: pre; overflow: hidden; text-overflow: ellipsis; min-height: 1.4em; }
+  #lvl .busy { color: var(--muted); font: 12px var(--mono); min-height: 1.4em; }
+  @media (max-width: 860px) {
+    html, body { height: auto; }
+    /* the title, then the charts, then the controls and numbers */
+    #lvl { height: auto; overflow: visible; display: flex; flex-direction: column; gap: 12px; }
+    #lvl .left { display: contents; }
+    #lvl .left > * { order: 2; }
+    #lvl .left > .intro { order: 0; }
+    #lvl .right { order: 1; }
+    #lvl .top { display: flex; flex-direction: column; flex: none; gap: 6px; }
+    #lvl .box.field { aspect-ratio: 1.05; max-width: 100%; }
+    #lvl .stack { display: flex; flex-direction: column; gap: 6px; }
+    #lvl .box.path { height: 220px; }
+    #lvl .box.zoom { aspect-ratio: 1.2; max-width: 100%; }
+    #lvl .box.pitch { flex: none; height: 220px; }
+  }
+</style>
+<div id="lvl">
+  <div class="left">
+    <div class="intro">
+      <h1>Level flight policy</h1>
+      <p class="sub">Velocity → pitch policies solved by pumpdp with forward distance priced at λ: each tick's reward is ΔTE + w·Δz, w = λ·21.5/330 as in the sweeps. λ = 0 is the gain-rate pump; raising λ trades climb for forward speed, and the λ whose cycle climbs 0 is the fastest sustained level flight. Drag on the velocity plane to start a flight anywhere; the zoom follows the pointer over the plane and sits on v0 otherwise. Click the frontier to pick λ. Pitch is Minecraft's: negative is nose up, drawn up.</p>
+    </div>
+    <div class="row"><label for="lv-lam">λ</label><input id="lv-lam" type="range" min="0" step="1"><input id="lv-lam-t" type="text" aria-label="lambda"></div>
+    <div class="row"><label></label><button id="lv-level" type="button">jump to level flight</button><span></span></div>
+    <div class="row"><label for="lv-vz">v<sub>z</sub>0</label><input id="lv-vz" type="range" min="0" max="3.6" step="0.001"><input id="lv-vz-t" type="text" aria-label="starting vz"></div>
+    <div class="row"><label for="lv-vy">v<sub>y</sub>0</label><input id="lv-vy" type="range" min="-2" max="2.8" step="0.001"><input id="lv-vy-t" type="text" aria-label="starting vy"></div>
+    <div class="row"><label for="lv-n">ticks</label><input id="lv-n" type="range" min="10" max="600" step="10"><input id="lv-n-t" type="text" aria-label="ticks flown"></div>
+    <div>
+      <p class="eyebrow">this λ's limit cycle</p>
+      <table><tbody id="lv-read"></tbody></table>
+    </div>
+    <div>
+      <p class="eyebrow">climb against forward speed, every λ</p>
+      <div class="box front"><canvas id="lv-front" aria-label="climb rate against forward speed for every lambda solved"></canvas></div>
+      <div class="busy" id="lv-busy"></div>
+    </div>
+    <p class="caption">Velocities and rates are in blocks per tick (× 20 for blocks per second). Each policy is solved discounted with horizon 3000 on a 0.01 b/t grid. Flights pick each tick's pitch as pumpdp does, the quarter degree maximizing the tick's reward plus the discounted V of where it lands; the zoom draws that choice. The limit cycle is pumpdp's own 60000-tick flight from the hand-flown reference's v0, read over its last 50000 ticks. Climb is total-energy gain per tick, which over whole cycles is height gain. Height swing is the cycle's peak-to-trough height after removing its mean climb. ΔTE is altitude plus |v|²/2g, with g = 0.08 b/t².</p>
+  </div>
+  <div class="right">
+    <div class="top">
+      <div class="box field"><canvas id="lv-field" aria-label="policy pitch over velocity, with the flight from v0"></canvas></div>
+      <div class="stack">
+        <div class="box path"><canvas id="lv-path" aria-label="flight path, height against distance"></canvas></div>
+        <div class="box zoom"><canvas id="lv-zoom" aria-label="the policy around v0, magnified, with each tick of the flight"></canvas></div>
+      </div>
+    </div>
+    <div class="readout" id="lv-fly"></div>
+    <div class="box pitch"><canvas id="lv-pitch" aria-label="pitch against tick for the flight from v0"></canvas></div>
+  </div>
+  <script>
+  (async () => {
+    const DATA = /*@DATA@*/null;
+    const root = document.querySelector("#lvl"), $q = s => root.querySelector(s);
+    const css = getComputedStyle(document.documentElement);
+    const T = Object.fromEntries(["bg", "panel", "line", "rule", "fg", "muted", "rate", "fwd", "fly", "mono"].map(k => [k, css.getPropertyValue(`--${k}`).trim()]));
+    const G = 0.08, DRAG_Y = Math.fround(0.98), DRAG_Z = Math.fround(0.99), LIMIT = 89;
+    const FADE = 0.06;   // opacity of the flight's last tick
+    const V0REF = DATA.v0, GR = DATA.grid;
+
+    // One tick at yaw 0, v_z >= 0: pumpdp's and field's f64 kernel.
+    function step(vy, vz, p) {
+      const lean = p*Math.PI/180, c = Math.cos(lean), lift = c*c, hor = Math.abs(vz);
+      vy += G*(-1 + lift*0.75);
+      if(vy < 0) { const k = vy*-0.1*lift; vy += k; vz += k; }
+      if(lean < 0) { const u = hor*-Math.sin(lean)*0.04; vy += u*3.2; vz -= u; }
+      vz += (hor - vz)*0.1;
+      return [vy*DRAG_Y, vz*DRAG_Z];
+    }
+    const ke = (vy, vz) => (vy*vy + vz*vz)/(2*G);
+
+    // ---- pumpdp's flight: each tick the quarter-degree pitch maximizing r + γ V(v'), r the tick's
+    // ΔTE plus w times its forward distance, both charged to the next state clamped onto the grid ----
+    const FPS = Array.from({length: 2*LIMIT*4 + 1}, (_, i) => Math.min(LIMIT, -LIMIT + 0.25*i));
+    const FT = FPS.map(p => { const l = p*Math.PI/180, c = Math.cos(l); return [c*c, l < 0 ? -Math.sin(l) : 0]; });
+    function lookahead(V, w) {
+      const {vy0, dv, ny, nz, gamma} = GR, yHi = vy0 + (ny-1)*dv, zHi = (nz-1)*dv;
+      const q = (vy, vz, i) => {
+        const [lift, up] = FT[i], hor = Math.abs(vz);
+        let y = vy + G*(-1 + lift*0.75), z = vz;
+        if(y < 0) { const k = y*-0.1*lift; y += k; z += k; }
+        const u = hor*up*0.04; y += u*3.2; z -= u;
+        z += (hor - z)*0.1; y *= DRAG_Y; z *= DRAG_Z;
+        const cy = Math.min(Math.max(y, vy0), yHi), cz = Math.min(Math.max(z, 0), zHi);
+        // the cell's weights are f32 in pumpdp
+        const x = (cy - vy0)/dv, xz = cz/dv, j = Math.min(Math.floor(x), ny-2), k = Math.min(Math.floor(xz), nz-2);
+        const a = Math.fround(x - j), b = Math.fround(xz - k), n = j*nz + k;
+        const v = (V[n]*(1-b) + V[n+1]*b)*(1-a) + (V[n+nz]*(1-b) + V[n+nz+1]*b)*a;
+        return y + ke(cy, cz) - ke(vy, vz) + w*cz + gamma*v;
+      };
+      // the first best, as pumpdp's fold keeps it
+      const best = (vy, vz, lo, hi, st) => { let bi = lo, bq = -Infinity; for(let i=lo;i<=hi;i+=st) { const v = q(vy, vz, i); if(v > bq) { bq = v; bi = i; } } return bi; };
+      return {
+        exact: (vy, vz) => FPS[best(vy, vz, 0, FPS.length-1, 1)],
+        // whole degrees, then the quarters around the best: for drawing, not flying
+        quick: (vy, vz) => { const c = best(vy, vz, 0, FPS.length-1, 4); return FPS[best(vy, vz, Math.max(0, c-3), Math.min(FPS.length-1, c+3), 1)]; },
+      };
+    }
+    // The run's V, f64 .npy, fetched from beside the page; null if it can't be.
+    async function loadV(mp) {
+      if(mp.V !== undefined) return mp.V;
+      try {
+        const r = await fetch(`${mp.dir}/V.npy`); if(!r.ok) throw r.status;
+        const buf = await r.arrayBuffer(), hl = new DataView(buf).getUint16(8, true);
+        mp.V = new Float64Array(buf.slice(10 + hl));
+        if(mp.V.length !== GR.ny*GR.nz) throw "shape";
+      } catch(e) { mp.V = null; }
+      return mp.V;
+    }
+
+    // ---- maps: zlib'd int16 quarter-degrees ----
+    async function decode(b64) {
+      const bin = atob(b64), b = new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++) b[i] = bin.charCodeAt(i);
+      const buf = await new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream("deflate"))).arrayBuffer();
+      const q = new Int16Array(buf), f = new Float32Array(q.length);
+      for(let i=0;i<q.length;i++) f[i] = q[i]/4;
+      return f;
+    }
+    function reader(M) {
+      const {vy0, dv, ny, nz} = GR;
+      return (vy, vz) => {
+        let x = (vy - vy0)/dv, y = vz/dv;
+        x = Math.min(Math.max(x, 0), ny-1); y = Math.min(Math.max(y, 0), nz-1);
+        const j = Math.min(Math.floor(x), ny-2), k = Math.min(Math.floor(y), nz-2), a = x-j, b = y-k, n = j*nz+k;
+        const lo = M[n]*(1-b) + M[n+1]*b, hi = M[n+nz]*(1-b) + M[n+nz+1]*b;
+        return Math.min(LIMIT, Math.max(-LIMIT, lo*(1-a) + hi*a));
+      };
+    }
+
+    // ---- a flight and what to read off it ----
+    function fly(policy, v0, n) {
+      const P = new Float64Array(n), VY = new Float64Array(n+1), VZ = new Float64Array(n+1), Y = new Float64Array(n+1), Z = new Float64Array(n+1), TE = new Float64Array(n+1);
+      let [vy, vz] = v0, y = 0, z = 0;
+      VY[0] = vy; VZ[0] = vz; TE[0] = ke(vy, vz);
+      for(let t=0;t<n;t++) {
+        const p = policy(vy, vz); P[t] = p;
+        [vy, vz] = step(vy, vz, p); y += vy; z += vz;   // vanilla moves by the new velocity
+        VY[t+1] = vy; VZ[t+1] = vz; Y[t+1] = y; Z[t+1] = z; TE[t+1] = y + ke(vy, vz);
+      }
+      return {P, VY, VZ, Y, Z, TE, n};
+    }
+    // ---- state ----
+    const maps = DATA.maps;
+    $q("#lv-busy").textContent = `inflating ${maps.length} maps…`;
+    await Promise.all(maps.map(async m => { m.raw = await decode(m.pitch); m.pitch = null; }));
+    $q("#lv-busy").textContent = "";
+    for(const m of maps) m.cyc = {climb: m.climb, fwd: m.fwd};
+    // zhw: the zoom's half-width, b/t, along its shorter side
+    const S = {lam: 4.3, vz: V0REF[1], vy: V0REF[0], n: 400, zhw: 0.15};
+    try { Object.assign(S, JSON.parse(localStorage.getItem("level-explorer-1") || "{}")); } catch(e) {}
+    S.n = Math.min(600, Math.max(10, S.n));
+    const nearestIdx = lam => maps.reduce((b, m, i) => Math.abs(m.lam - lam) < Math.abs(maps[b].lam - lam) ? i : b, 0);
+    let idx = nearestIdx(S.lam);
+    // policy flies, zpolicy draws the zoom; both the lookahead on V once it's loaded, else the pitch map
+    let policy = null, zpolicy = null, image = null, flight = null, exact = false;
+    // the hovered tick: an index into the flight's states, 0 being v0; tick i flies pitch P[i-1] from state i-1 to i
+    let hover = null;
+    const HOT = "#ffffff";
+    function ring(ctx, x, y) {
+      ctx.lineWidth = 4; ctx.strokeStyle = T.bg; ctx.beginPath(); ctx.arc(x, y, 7, 0, 2*Math.PI); ctx.stroke();
+      ctx.lineWidth = 2; ctx.strokeStyle = HOT; ctx.beginPath(); ctx.arc(x, y, 7, 0, 2*Math.PI); ctx.stroke();
+    }
+
+    // ---- drawing ----
+    function setup(canvas) {
+      const rect = canvas.getBoundingClientRect(), dpr = Math.min(devicePixelRatio || 1, 2);
+      canvas.width = Math.max(1, Math.round(rect.width*dpr)); canvas.height = Math.max(1, Math.round(rect.height*dpr));
+      const ctx = canvas.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = T.panel; ctx.fillRect(0, 0, rect.width, rect.height);
+      ctx.font = `11px ${T.mono}`;
+      return [ctx, rect.width, rect.height];
+    }
+    function niceStep(span, n) { const raw = span/n, mag = 10**Math.floor(Math.log10(raw)), q = raw/mag; return (q<=1?1:q<=2?2:q<=2.5?2.5:q<=5?5:10)*mag; }
+    const dec = v => Math.max(0, Math.ceil(-Math.log10(v) - 1e-9));
+    const GRID = "rgba(185,192,201,.14)", ZERO = "rgba(230,233,237,.35)";
+    // Opacity of tick i of n: 1 at the start, FADE at the end.
+    const fade = (i, n) => 1 - (1 - FADE)*i/n;
+    // Gridlines and labels; one step for both axes unless each is given its own.
+    function axes(ctx, X, Y, xr, yr, m, bw, bh, n, xl, yl, w, h, sep) {
+      ctx.strokeStyle = GRID; ctx.lineWidth = 1; ctx.fillStyle = T.muted;
+      const one = niceStep(Math.max(xr[1]-xr[0], yr[1]-yr[0]), n);
+      const sx = sep ? niceStep(xr[1]-xr[0], n) : one, sy = sep ? niceStep(yr[1]-yr[0], Math.max(2, Math.round(n*bh/bw))) : one;
+      for(let x=Math.ceil(xr[0]/sx)*sx; x<=xr[1]; x+=sx) { ctx.beginPath(); ctx.moveTo(X(x), m.t); ctx.lineTo(X(x), m.t+bh); ctx.stroke(); ctx.textAlign = "center"; ctx.fillText(x.toFixed(dec(sx)), X(x), m.t+bh+13); }
+      for(let y=Math.ceil(yr[0]/sy)*sy; y<=yr[1]; y+=sy) { ctx.beginPath(); ctx.moveTo(m.l, Y(y)); ctx.lineTo(m.l+bw, Y(y)); ctx.stroke(); ctx.textAlign = "right"; ctx.fillText(y.toFixed(dec(sy)), m.l-4, Y(y)+4); }
+      ctx.textAlign = "center"; ctx.fillText(xl, m.l+bw/2, h-3);
+      ctx.save(); ctx.translate(11, m.t+bh/2); ctx.rotate(-Math.PI/2); ctx.fillText(yl, 0, 0); ctx.restore();
+    }
+    // A polyline in tick order, each step at the opacity of its later tick.
+    function fadedLine(ctx, n, at, color, lw) {
+      ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.lineCap = "round";
+      for(let i=1;i<=n;i++) {
+        const [x0, y0] = at(i-1), [x1, y1] = at(i);
+        ctx.globalAlpha = fade(i, n); ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+    function endMarks(ctx, s, e) {
+      ctx.strokeStyle = T.fg; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.5;
+      ctx.beginPath(); ctx.rect(e[0]-4, e[1]-4, 8, 8); ctx.stroke(); ctx.globalAlpha = 1;
+      ctx.beginPath(); ctx.arc(s[0], s[1], 5, 0, Math.PI*2); ctx.fillStyle = "#ffffff"; ctx.fill(); ctx.strokeStyle = T.bg; ctx.stroke();
+    }
+
+    // Diverging pitch ramp through the field's near-black zero, the field figures' pair.
+    const UP = [0x6f, 0x8c, 0xff], MID = [0x0c, 0x0d, 0x10], DOWN = [0xe0, 0x60, 0x7e];
+    function mapImage(M) {
+      const {ny, nz} = GR, img = new ImageData(nz, ny);
+      for(let j=0;j<ny;j++) for(let k=0;k<nz;k++) {
+        const p = M[j*nz+k], f = Math.min(1, Math.abs(p)/LIMIT), c = p < 0 ? UP : DOWN, o = ((ny-1-j)*nz + k)*4;
+        for(let i=0;i<3;i++) img.data[o+i] = MID[i] + (c[i]-MID[i])*f;
+        img.data[o+3] = 255;
+      }
+      const cv = document.createElement("canvas"); cv.width = nz; cv.height = ny; cv.getContext("2d").putImageData(img, 0, 0);
+      return cv;
+    }
+    // The look direction at a velocity: pitch θ points along (vz, vy) = (cos θ, −sin θ), so nose up points up.
+    function arrow(ctx, ax, ay, pitch) {
+      const lean = pitch*Math.PI/180, dx = Math.cos(lean), dy = Math.sin(lean), L = 34, hd = 8;
+      // the shaft stops inside the head's base, so its cap can't poke out past the tip
+      const tx = ax + dx*L, ty = ay + dy*L, bx = tx - dx*hd*0.6, by = ty - dy*hd*0.6;
+      ctx.lineCap = "butt";
+      ctx.strokeStyle = T.bg; ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+      ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(tx - hd*(dx*0.9 - dy*0.5), ty - hd*(dy*0.9 + dx*0.5));
+      ctx.lineTo(tx - hd*(dx*0.9 + dy*0.5), ty - hd*(dy*0.9 - dx*0.5)); ctx.closePath();
+      ctx.fillStyle = "#ffffff"; ctx.fill(); ctx.strokeStyle = T.bg; ctx.lineWidth = 1; ctx.stroke();
+      ctx.fillStyle = T.fg; ctx.textAlign = dx >= 0 ? "left" : "right";
+      ctx.fillText(`${pitch.toFixed(1)}°`, tx + (dx >= 0 ? 6 : -6), ty + (dy >= 0 ? 12 : -4));
+    }
+    const pitchRGB = p => { const f = Math.min(1, Math.abs(p)/LIMIT), c = p < 0 ? UP : DOWN; return c.map((v, j) => MID[j] + (v-MID[j])*f); };
+    // The policy as flown, bilinear between nodes, sampled every `px` CSS pixels.
+    function exactImage(X0, Y1, sc, bw, bh, px) {
+      const nw = Math.max(1, Math.ceil(bw/px)), nh = Math.max(1, Math.ceil(bh/px)), img = new ImageData(nw, nh);
+      for(let j=0;j<nh;j++) for(let i=0;i<nw;i++) {
+        const c = pitchRGB(zpolicy(Y1 - (j+0.5)*px/sc, X0 + (i+0.5)*px/sc)), o = (j*nw + i)*4;
+        img.data[o] = c[0]; img.data[o+1] = c[1]; img.data[o+2] = c[2]; img.data[o+3] = 255;
+      }
+      const cv = document.createElement("canvas"); cv.width = nw; cv.height = nh; cv.getContext("2d").putImageData(img, 0, 0);
+      return [cv, nw*px, nh*px];
+    }
+    // A velocity plane: `want` fitted at equal aspect. The main one draws the node map, a pitch scale
+    // and the zoom's box; the zoom draws the policy as flown, the nodes, and every tick as a dot.
+    function drawPlane(cv, want, zoom) {
+      const [ctx, w, h] = setup(cv), m = {l: 44, r: zoom ? 10 : 50, t: 8, b: 30};
+      const bw = w-m.l-m.r, bh = h-m.t-m.b; if(bw <= 0 || bh <= 0) return null;
+      const sc = Math.min(bw/(want.x[1]-want.x[0]), bh/(want.y[1]-want.y[0]));
+      const cx = (want.x[0]+want.x[1])/2, cy = (want.y[0]+want.y[1])/2;
+      const xr = [cx-bw/sc/2, cx+bw/sc/2], yr = [cy-bh/sc/2, cy+bh/sc/2];
+      const X = x => m.l + (x-xr[0])*sc, Y = y => m.t + (yr[1]-y)*sc;
+      ctx.save(); ctx.beginPath(); ctx.rect(m.l, m.t, bw, bh); ctx.clip();
+      ctx.fillStyle = T.bg; ctx.fillRect(m.l, m.t, bw, bh);
+      ctx.imageSmoothingEnabled = false;
+      if(zoom) {
+        const key = [idx, exact, xr, yr, bw, bh].join();
+        if(zcache.key !== key) zcache = {key, im: exactImage(xr[0], yr[1], sc, bw, bh, exact ? 3 : 2)};
+        const [im, iw, ih] = zcache.im; ctx.drawImage(im, m.l, m.t, iw, ih);
+      }
+      else ctx.drawImage(image, X(-GR.dv/2), Y(GR.vy0 + (GR.ny-0.5)*GR.dv), GR.nz*GR.dv*sc, GR.ny*GR.dv*sc);
+      ctx.restore();
+      axes(ctx, X, Y, xr, yr, m, bw, bh, zoom ? 5 : 7, "vz (b/t)", "vy (b/t)", w, h);
+      ctx.save(); ctx.beginPath(); ctx.rect(m.l, m.t, bw, bh); ctx.clip();
+      ctx.strokeStyle = ZERO; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(m.l, Y(0)); ctx.lineTo(m.l+bw, Y(0)); ctx.stroke(); ctx.setLineDash([]);
+      // the grid's nodes, once they are far enough apart to see
+      if(zoom && GR.dv*sc >= 6) {
+        ctx.fillStyle = "rgba(230,233,237,.45)";
+        const r = GR.dv*sc >= 14 ? 1.6 : 1;
+        for(let k=Math.max(0, Math.ceil(xr[0]/GR.dv)); k*GR.dv <= xr[1] && k < GR.nz; k++)
+          for(let j=Math.max(0, Math.ceil((yr[0]-GR.vy0)/GR.dv)); GR.vy0 + j*GR.dv <= yr[1] && j < GR.ny; j++)
+            ctx.fillRect(X(k*GR.dv)-r/2, Y(GR.vy0 + j*GR.dv)-r/2, r, r);
+      }
+      const F = flight;
+      fadedLine(ctx, F.n, i => [X(F.VZ[i]), Y(F.VY[i])], "#ffffff", zoom ? 1.2 : 1.6);
+      if(zoom) {
+        ctx.fillStyle = "#ffffff";
+        for(let i=1;i<=F.n;i++) { ctx.globalAlpha = fade(i, F.n); ctx.beginPath(); ctx.arc(X(F.VZ[i]), Y(F.VY[i]), 2.4, 0, 2*Math.PI); ctx.fill(); }
+        ctx.globalAlpha = 1;
+      }
+      arrow(ctx, X(F.VZ[0]), Y(F.VY[0]), F.P[0]);
+      endMarks(ctx, [X(F.VZ[0]), Y(F.VY[0])], [X(F.VZ[F.n]), Y(F.VY[F.n])]);
+      if(hover !== null) ring(ctx, X(F.VZ[hover]), Y(F.VY[hover]));
+      if(!zoom) {
+        // the region the zoom actually shows: its request widened to its panel's aspect
+        const z = zgeom ? zgeom.view : zoomWant();
+        ctx.strokeStyle = T.fly; ctx.lineWidth = 1.2; ctx.setLineDash([4, 3]);
+        ctx.strokeRect(X(z.x[0]), Y(z.y[1]), (z.x[1]-z.x[0])*sc, (z.y[1]-z.y[0])*sc); ctx.setLineDash([]);
+      }
+      ctx.restore();
+      if(zoom) {
+        const lab = `±${S.zhw < 0.1 ? S.zhw.toFixed(3) : S.zhw.toFixed(2)} b/t`, tw = ctx.measureText(lab).width;
+        ctx.textAlign = "right"; ctx.fillStyle = "rgba(20,23,26,.75)"; ctx.fillRect(m.l+bw-tw-10, m.t+2, tw+8, 15);
+        ctx.fillStyle = T.fg; ctx.fillText(lab, m.l+bw-6, m.t+13);
+      } else {
+        const sx = w-m.r+12, sw = 9;
+        for(let i=0;i<bh;i++) { ctx.fillStyle = `rgb(${pitchRGB(-LIMIT + 2*LIMIT*i/(bh-1)).map(Math.round).join(",")})`; ctx.fillRect(sx, m.t+i, sw, 1.5); }
+        ctx.fillStyle = T.muted; ctx.textAlign = "left";
+        for(const p of [-89, -45, 0, 45, 89]) ctx.fillText(String(p), sx+sw+3, m.t + (p+LIMIT)/(2*LIMIT)*(bh-1) + 4);
+      }
+      return {sc, X, Y, view: {x: xr, y: yr}, Xi: px => xr[0] + (px-m.l)/sc, Yi: py => yr[1] - (py-m.t)/sc};
+    }
+    let fgeom = null, zgeom = null, pgeom = null, tgeom = null, ngeom = null, zcache = {key: null};
+    // The zoom centers on the pointer while it is over the main plane, and on v0 otherwise.
+    let hoverV = null;
+    const zoomWant = () => { const c = hoverV || {vz: S.vz, vy: S.vy}; return {x: [c.vz - S.zhw, c.vz + S.zhw], y: [c.vy - S.zhw, c.vy + S.zhw]}; };
+    function drawField() { fgeom = drawPlane($q("#lv-field"), {x: [-0.05, 3.0], y: [-1.15, 2.1]}, false) || fgeom; }
+    // Draw the zoom before the main plane, which boxes the zoom's extent.
+    function drawZoom() { zgeom = drawPlane($q("#lv-zoom"), zoomWant(), true) || zgeom; }
+
+    // Height against distance. A level flight runs far and climbs little, so the axes scale apart;
+    // the corner says by how much height is stretched.
+    function drawPath() {
+      const [ctx, w, h] = setup($q("#lv-path")), m = {l: 44, r: 10, t: 8, b: 30}, F = flight;
+      const bw = w-m.l-m.r, bh = h-m.t-m.b; if(bw <= 0 || bh <= 0) return;
+      let z0 = Infinity, z1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for(let i=0;i<=F.n;i++) { z0 = Math.min(z0, F.Z[i]); z1 = Math.max(z1, F.Z[i]); y0 = Math.min(y0, F.Y[i]); y1 = Math.max(y1, F.Y[i]); }
+      const zp = Math.max(z1-z0, 4)*0.03, yp = Math.max(y1-y0, 4)*0.06;
+      const zr = [z0-zp, z1+zp], yr = [y0-yp, y1+yp];
+      const sx = bw/(zr[1]-zr[0]), sy = bh/(yr[1]-yr[0]);
+      const X = z => m.l + (z-zr[0])*sx, Y = y => m.t + (yr[1]-y)*sy;
+      axes(ctx, X, Y, zr, yr, m, bw, bh, 7, "z (blocks)", "y (blocks)", w, h, true);
+      ctx.save(); ctx.beginPath(); ctx.rect(m.l, m.t, bw, bh); ctx.clip();
+      ctx.strokeStyle = ZERO; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(m.l, Y(0)); ctx.lineTo(m.l+bw, Y(0)); ctx.stroke(); ctx.setLineDash([]);
+      fadedLine(ctx, F.n, i => [X(F.Z[i]), Y(F.Y[i])], T.fly, 1.8);
+      endMarks(ctx, [X(0), Y(0)], [X(F.Z[F.n]), Y(F.Y[F.n])]);
+      if(hover !== null) ring(ctx, X(F.Z[hover]), Y(F.Y[hover]));
+      ctx.restore();
+      const ex = sy/sx, lab = ex >= 1.05 ? `height ×${ex < 10 ? ex.toFixed(1) : ex.toFixed(0)}` : ex <= 0.95 ? `height ×${ex.toFixed(2)}` : "";
+      if(lab) {
+        const tw = ctx.measureText(lab).width;
+        ctx.textAlign = "right"; ctx.fillStyle = "rgba(20,23,26,.75)"; ctx.fillRect(m.l+bw-tw-10, m.t+2, tw+8, 15);
+        ctx.fillStyle = T.fg; ctx.fillText(lab, m.l+bw-6, m.t+13);
+      }
+      pgeom = {X, Y};
+    }
+
+    function drawPitch() {
+      const [ctx, w, h] = setup($q("#lv-pitch")), m = {l: 44, r: 12, t: 8, b: 30}, F = flight, N = F.n;
+      const bw = w-m.l-m.r, bh = h-m.t-m.b; if(bw <= 0 || bh <= 0) return;
+      const X = t => m.l + t/N*bw, Y = p => m.t + (p+90)/180*bh;   // −90 (nose up) at the top
+      tgeom = {Xi: px => (px - m.l)/bw*N, inside: (px, py) => px >= m.l && px <= m.l+bw && py >= m.t && py <= m.t+bh};
+      ctx.fillStyle = T.muted; ctx.strokeStyle = GRID; ctx.lineWidth = 1;
+      for(let p=-90;p<=90;p+=30) { ctx.beginPath(); ctx.moveTo(m.l, Y(p)); ctx.lineTo(m.l+bw, Y(p)); ctx.stroke(); ctx.textAlign = "right"; ctx.fillText(String(p), m.l-4, Y(p)+4); }
+      const ts = Math.max(1, niceStep(N, 8));
+      for(let t=0;t<=N+1e-9;t+=ts) { ctx.beginPath(); ctx.moveTo(X(t), m.t); ctx.lineTo(X(t), m.t+bh); ctx.stroke(); ctx.textAlign = "center"; ctx.fillText(String(Math.round(t)), X(t), m.t+bh+13); }
+      ctx.textAlign = "center"; ctx.fillText("tick", m.l+bw/2, h-3);
+      ctx.save(); ctx.translate(11, m.t+bh/2); ctx.rotate(-Math.PI/2); ctx.fillText("pitch (°)", 0, 0); ctx.restore();
+      ctx.strokeStyle = ZERO; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(m.l, Y(0)); ctx.lineTo(m.l+bw, Y(0)); ctx.stroke(); ctx.setLineDash([]);
+      if(hover !== null && hover > 0) {
+        ctx.fillStyle = "rgba(255,255,255,.14)"; ctx.fillRect(X(hover-1), m.t, Math.max(1, X(hover) - X(hover-1)), bh);
+        ctx.strokeStyle = HOT; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(X(hover), m.t); ctx.lineTo(X(hover), m.t+bh); ctx.stroke();
+      }
+      // tick i applies its pitch over [i-1, i]; a riser joins each tick to the one before
+      ctx.strokeStyle = T.fly; ctx.lineWidth = N > 800 ? 1.2 : 1.8;
+      for(let i=1;i<=N;i++) {
+        const p = F.P[i-1], q = i > 1 ? F.P[i-2] : p;
+        ctx.globalAlpha = fade(i, N); ctx.beginPath(); ctx.moveTo(X(i-1), Y(q)); ctx.lineTo(X(i-1), Y(p)); ctx.lineTo(X(i), Y(p)); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = T.line; ctx.strokeRect(m.l, m.t, bw, bh);
+    }
+
+    // Climb against forward speed for every λ, from pumpdp's flights, the current one ringed,
+    // and the level-flight crossing marked on climb = 0.
+    function drawFront() {
+      const [ctx, w, h] = setup($q("#lv-front")), m = {l: 48, r: 10, t: 10, b: 30};
+      const bw = w-m.l-m.r, bh = h-m.t-m.b; if(bw <= 0 || bh <= 0) return;
+      const pts = maps;
+      // the climbing side, plus a little below level; the steep dives run off the bottom
+      const fx = pts.map(p => p.cyc.fwd), cy = pts.map(p => p.cyc.climb);
+      const xr = [Math.min(...fx) - 0.03, Math.min(Math.max(...fx), 2.3) + 0.03];
+      const yr = [Math.max(Math.min(...cy), -0.06) - 0.004, Math.max(...cy) + 0.006];
+      const X = x => m.l + (x-xr[0])/(xr[1]-xr[0])*bw, Y = y => m.t + (yr[1]-y)/(yr[1]-yr[0])*bh;
+      axes(ctx, X, Y, xr, yr, m, bw, bh, 5, "forward (b/t)", "climb (b/t)", w, h, true);
+      ctx.save(); ctx.beginPath(); ctx.rect(m.l, m.t, bw, bh); ctx.clip();
+      ctx.strokeStyle = ZERO; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(m.l, Y(0)); ctx.lineTo(m.l+bw, Y(0)); ctx.stroke(); ctx.setLineDash([]);
+      ctx.strokeStyle = T.rate; ctx.lineWidth = 1.4; ctx.globalAlpha = 0.6; ctx.beginPath();
+      pts.forEach((p, i) => i ? ctx.lineTo(X(p.cyc.fwd), Y(p.cyc.climb)) : ctx.moveTo(X(p.cyc.fwd), Y(p.cyc.climb))); ctx.stroke();
+      ctx.globalAlpha = 1; ctx.fillStyle = T.rate;
+      for(const p of pts) { ctx.beginPath(); ctx.arc(X(p.cyc.fwd), Y(p.cyc.climb), 2.2, 0, 2*Math.PI); ctx.fill(); }
+      const lv = levelCross();
+      if(lv) { ctx.strokeStyle = T.fwd; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(X(lv.fwd), Y(0)-6); ctx.lineTo(X(lv.fwd), Y(0)+6); ctx.stroke(); }
+      const c = maps[idx].cyc;
+      if(c) ring(ctx, X(c.fwd), Y(c.climb));
+      ctx.restore();
+      if(lv) { ctx.fillStyle = T.fwd; ctx.textAlign = "right"; ctx.fillText(`level ≈ λ ${lv.lam.toFixed(2)}, ${lv.fwd.toFixed(3)} b/t`, m.l+bw-6, m.t+13); }
+      ngeom = {pts, X, Y};
+    }
+    // Where climb first crosses 0 going up in λ, by linear interpolation between solved λ.
+    function levelCross() {
+      for(let i=1;i<maps.length;i++) {
+        const a = maps[i-1].cyc, b = maps[i].cyc;
+        if(a.climb >= 0 && b.climb < 0) {
+          const f = a.climb/(a.climb - b.climb);
+          return {lam: maps[i-1].lam + f*(maps[i].lam - maps[i-1].lam), fwd: a.fwd + f*(b.fwd - a.fwd), i: a.climb < -b.climb ? i-1 : i, lo: i-1};
+        }
+      }
+      return null;
+    }
+
+    function renderCycle() {
+      const mp = maps[idx], f = (v, d) => v == null ? "–" : v.toFixed(d);
+      const sg = v => (v >= 0 ? "+" : "") + v.toFixed(4);
+      const rows = [
+        ["climb", `${sg(mp.climb)} b/t (${(mp.climb >= 0 ? "+" : "") + (mp.climb*20).toFixed(3)} b/s)`],
+        ["forward speed", `${f(mp.fwd, 4)} b/t (${f(mp.fwd*20, 2)} b/s)`],
+        ["vs λ = 0", `${f(mp.fwd/maps[0].fwd*100 - 100, 1)}% faster`],
+        ["height swing", `${f(mp.swing, 1)} blocks`],
+        ["vz range", `${f(mp.vz[0], 2)}–${f(mp.vz[1], 2)} b/t`],
+        ["snaps (≤ −80°)", `${mp.laps} in 50000 t`],
+        ["reversals > 2°", `${f(mp.rev, 0)} per 1000 t`],
+        ["closes", mp.period ? `every ${mp.period} t` : "no, quasi-periodic"],
+        ["w", f(mp.w, 4)],
+      ];
+      $q("#lv-read").innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td class="v">${v}</td></tr>`).join("");
+    }
+    function renderFlight() {
+      const F = flight, d = F.TE[F.n] - F.TE[0];
+      const h = hover;
+      $q("#lv-fly").textContent = h === null
+        ? `${F.n} ticks from v0   ΔTE ${d.toFixed(2)} blocks   climb ${F.Y[F.n].toFixed(1)}, distance ${F.Z[F.n].toFixed(0)} blocks   ${(F.Z[F.n]/F.n).toFixed(3)} b/t forward`
+        : `tick ${h}${h ? `  pitch ${F.P[h-1].toFixed(2)}°` : ""}  v (${F.VZ[h].toFixed(4)}, ${F.VY[h].toFixed(4)}) b/t  ΔTE ${(F.TE[h]-F.TE[0]).toFixed(2)}  y ${F.Y[h].toFixed(1)}  z ${F.Z[h].toFixed(1)}`;
+    }
+
+    // ---- controls ----
+    const lamR = $q("#lv-lam"), lamT = $q("#lv-lam-t");
+    lamR.max = maps.length - 1;
+    const pairs = {vz: [0, 3.6, 3], vy: [-2, 2.8, 3], n: [10, 600, 0]};
+    function save() { try { localStorage.setItem("level-explorer-1", JSON.stringify(S)); } catch(e) {} }
+    const lamStr = l => String(+l.toFixed(3));
+    function syncControls() {
+      lamR.value = idx; lamT.value = lamStr(maps[idx].lam);
+      for(const k in pairs) { $q(`#lv-${k}`).value = S[k]; $q(`#lv-${k}-t`).value = S[k].toFixed(pairs[k][2]); }
+    }
+    function refly() { flight = fly(policy, [S.vy, S.vz], S.n); if(hover !== null && hover > S.n) hover = null; renderFlight(); drawZoom(); drawField(); drawPath(); drawPitch(); }
+    // λ changed: new map and image, flown on the pitch map until V arrives, then on V.
+    function rebuild() {
+      const at = idx, mp = maps[at]; S.lam = mp.lam;
+      policy = zpolicy = reader(mp.raw); image = mapImage(mp.raw); exact = false;
+      renderCycle(); drawFront(); refly(); syncControls(); save();
+      $q("#lv-busy").textContent = "fetching V…";
+      loadV(mp).then(V => {
+        if(idx !== at) return;
+        if(V) { const L = lookahead(V, mp.w); policy = L.exact; zpolicy = L.quick; exact = true; }
+        $q("#lv-busy").textContent = V ? "" : `couldn't fetch ${mp.dir}/V.npy: flying the pitch map, bilinear between nodes, not pumpdp's lookahead`;
+        refly();
+      });
+    }
+    let pend = 0;
+    const setIdx = i => { idx = Math.min(maps.length-1, Math.max(0, i)); cancelAnimationFrame(pend); pend = requestAnimationFrame(rebuild); };
+    let flyPend = 0;
+    function scheduleFly() { cancelAnimationFrame(flyPend); flyPend = requestAnimationFrame(() => { refly(); syncControls(); save(); }); }
+    lamR.addEventListener("input", () => { setIdx(+lamR.value); lamT.value = lamStr(maps[+lamR.value].lam); });
+    lamT.addEventListener("change", () => { const v = parseFloat(lamT.value); if(isFinite(v)) setIdx(nearestIdx(v)); else lamT.value = lamStr(maps[idx].lam); });
+    $q("#lv-level").addEventListener("click", () => { const lv = levelCross(); if(lv) setIdx(lv.i); });
+    for(const k in pairs) {
+      const r = $q(`#lv-${k}`), t = $q(`#lv-${k}-t`), [lo, hi, dg] = pairs[k];
+      const set = v => { S[k] = k === "n" ? Math.round(v) : v; scheduleFly(); };
+      r.addEventListener("input", () => { set(+r.value); t.value = (+r.value).toFixed(dg); });
+      t.addEventListener("change", () => { const v = parseFloat(t.value); if(v >= lo && v <= hi) set(v); t.value = S[k].toFixed(dg); });
+    }
+    // click the frontier to take the nearest λ
+    const frontCv = $q("#lv-front");
+    frontCv.addEventListener("click", e => {
+      if(!ngeom) return;
+      const r = frontCv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+      let best = null, bd = Infinity;
+      for(const p of ngeom.pts) { const d = Math.hypot(ngeom.X(p.cyc.fwd) - px, ngeom.Y(p.cyc.climb) - py); if(d < bd) { bd = d; best = p; } }
+      if(best) setIdx(maps.indexOf(best));
+    });
+    // drag anywhere on the velocity plane to put v0 there
+    const fieldCv = $q("#lv-field");
+    const clampV = () => { S.vz = Math.min(Math.max(S.vz, 0), (GR.nz-1)*GR.dv); S.vy = Math.min(Math.max(S.vy, GR.vy0), GR.vy0 + (GR.ny-1)*GR.dv); };
+    const place = e => {
+      if(!fgeom) return;
+      const r = fieldCv.getBoundingClientRect();
+      S.vz = fgeom.Xi(e.clientX - r.left); S.vy = fgeom.Yi(e.clientY - r.top); clampV();
+      scheduleFly();
+    };
+    let dragging = false;
+    fieldCv.addEventListener("pointerdown", e => { dragging = true; fieldCv.setPointerCapture(e.pointerId); place(e); });
+    let hoverPend = 0;
+    fieldCv.addEventListener("pointermove", e => {
+      if(fgeom) { const r = fieldCv.getBoundingClientRect(); hoverV = {vz: fgeom.Xi(e.clientX - r.left), vy: fgeom.Yi(e.clientY - r.top)}; }
+      if(dragging) place(e);
+      else { cancelAnimationFrame(hoverPend); hoverPend = requestAnimationFrame(() => { drawZoom(); drawField(); }); }
+    });
+    fieldCv.addEventListener("pointerleave", () => { if(dragging) return; hoverV = null; cancelAnimationFrame(hoverPend); hoverPend = requestAnimationFrame(() => { drawZoom(); drawField(); }); });
+    fieldCv.addEventListener("wheel", e => { e.preventDefault(); S.zhw = Math.min(1.5, Math.max(0.004, S.zhw*Math.exp(e.deltaY*0.0015))); drawZoom(); drawField(); save(); }, {passive: false});
+    fieldCv.addEventListener("pointerup", e => { dragging = false; const r = fieldCv.getBoundingClientRect(); if(e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) { hoverV = null; drawZoom(); drawField(); } });
+    fieldCv.addEventListener("pointercancel", () => { dragging = false; });
+    // A drag in the zoom pans it: the plane moves with the pointer, and v0, the zoom's center, moves against it.
+    const zoomCv = $q("#lv-zoom");
+    let zdrag = null;
+    zoomCv.addEventListener("pointerdown", e => { if(!zgeom) return; zdrag = {x: e.clientX, y: e.clientY, vz: S.vz, vy: S.vy, sc: zgeom.sc}; zoomCv.setPointerCapture(e.pointerId); });
+    zoomCv.addEventListener("pointermove", e => {
+      if(!zdrag) return;
+      S.vz = zdrag.vz - (e.clientX - zdrag.x)/zdrag.sc; S.vy = zdrag.vy + (e.clientY - zdrag.y)/zdrag.sc;
+      clampV(); scheduleFly();
+    });
+    zoomCv.addEventListener("pointerup", () => { zdrag = null; });
+    zoomCv.addEventListener("pointercancel", () => { zdrag = null; });
+    zoomCv.addEventListener("wheel", e => {
+      e.preventDefault();
+      S.zhw = Math.min(1.5, Math.max(0.004, S.zhw*Math.exp(e.deltaY*0.0015)));
+      if(zdrag && zgeom) { drawZoom(); zdrag = {x: e.clientX, y: e.clientY, vz: S.vz, vy: S.vy, sc: zgeom.sc}; }
+      scheduleFly();
+    }, {passive: false});
+    // ---- hover: the tick under the pointer, highlighted everywhere it is drawn ----
+    let hovPend = 0;
+    function setHover(i) {
+      if(i === hover) return;
+      hover = i;
+      cancelAnimationFrame(hovPend);
+      hovPend = requestAnimationFrame(() => { renderFlight(); drawZoom(); drawField(); drawPath(); drawPitch(); });
+    }
+    // the state nearest the pointer on a plane, within `reach` CSS pixels
+    function nearest(geom, xs, ys, px, py, reach) {
+      if(!geom || !flight) return null;
+      let best = null, bd = reach;
+      for(let i=0;i<=flight.n;i++) { const d = Math.hypot(geom.X(xs[i]) - px, geom.Y(ys[i]) - py); if(d < bd) { bd = d; best = i; } }
+      return best;
+    }
+    const local = (cv, e) => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+    fieldCv.addEventListener("pointermove", e => { if(!dragging) setHover(nearest(fgeom, flight.VZ, flight.VY, ...local(fieldCv, e), 8)); });
+    fieldCv.addEventListener("pointerleave", () => setHover(null));
+    zoomCv.addEventListener("pointermove", e => { if(!zdrag) setHover(nearest(zgeom, flight.VZ, flight.VY, ...local(zoomCv, e), 10)); });
+    zoomCv.addEventListener("pointerleave", () => setHover(null));
+    const pathCv = $q("#lv-path"), pitchCv = $q("#lv-pitch");
+    pathCv.addEventListener("pointermove", e => setHover(nearest(pgeom, flight.Z, flight.Y, ...local(pathCv, e), 12)));
+    pathCv.addEventListener("pointerleave", () => setHover(null));
+    pitchCv.addEventListener("pointermove", e => {
+      const [px, py] = local(pitchCv, e);
+      if(!tgeom || !tgeom.inside(px, py)) return setHover(null);
+      setHover(Math.min(flight.n, Math.max(1, Math.ceil(tgeom.Xi(px)))));
+    });
+    pitchCv.addEventListener("pointerleave", () => setHover(null));
+    addEventListener("resize", () => { if(flight) { drawZoom(); drawField(); drawPath(); drawPitch(); drawFront(); } });
+    rebuild();
+  })();
+  </script>
+</div>
