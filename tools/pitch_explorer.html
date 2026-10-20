@@ -64,7 +64,8 @@
   #pitch-explorer .readout.idle { color: var(--muted); font-family: var(--ui); }
   @media (max-width: 860px) {
     html, body { height: auto; }
-    #pitch-explorer { height: auto; overflow: visible; grid-template-columns: minmax(0, 1fr); }
+    #pitch-explorer { height: auto; overflow: visible; grid-template-columns: minmax(0, 1fr); row-gap: 14px; }
+    #pitch-explorer .right { order: -1; }
     #pitch-explorer .left { overflow: visible; padding-right: 0; }
     #pitch-explorer .top { flex: none; display: flex; flex-direction: column; gap: 6px; }
     #pitch-explorer .gutter { display: none; }
@@ -87,18 +88,17 @@
       <label for="pe-code" class="caption">Schedule code. Paste one here to load it.</label>
       <div class="code-row"><input id="pe-code" type="text" spellcheck="false"><button id="pe-copy">copy</button></div>
     </div>
-    <p class="caption">Velocities are in blocks per tick. ΔTE is the gain in total energy since v0, in blocks: altitude plus |v|²/2g, with g = 0.08 b/t². ΔTE/n is that gain per tick.</p>
+    <p class="caption">Velocities are in blocks per tick. ΔTE is the gain in total energy since v0, in blocks: altitude plus |v|²/2g, with g = 0.08 b/t².</p>
   </div>
   <div class="gutter col" id="pe-g-rail" title="drag to resize, double-click to reset"></div>
   <div class="right">
-    <div class="top" id="pe-top" data-path="beside">
+    <div class="top" id="pe-top">
       <div class="box field"><canvas id="pe-field" aria-label="velocity plane with the schedule's trajectory over the one-tick energy field"></canvas></div>
       <div class="gutter col" id="pe-g-split" title="drag to resize, double-click to reset"></div>
       <div class="box path" id="pe-path-box"><canvas id="pe-path" aria-label="flight path, height against distance"></canvas></div>
     </div>
     <div class="bar">
       <div class="readout" id="pe-read"></div>
-      <label for="pe-path-at">flight path <select id="pe-path-at"><option value="beside">beside</option><option value="below">below</option><option value="off">off</option></select></label>
       <button id="pe-fit">fit view</button><button id="pe-reset">reset view</button>
     </div>
     <p class="caption">Drag v0 to move it, drag elsewhere to pan; wheel zooms.</p>
@@ -278,7 +278,6 @@
     const pathCv = $q("#pe-path"), topEl = $q("#pe-top");
     let ggeom = null;
     function drawPath(pts) {
-      if(topEl.dataset.path === "off") { ggeom = null; return; }
       const [ctx, w, h] = setup(pathCv), m = {l: 44, r: 10, t: 10, b: 30};
       const bw = w - m.l - m.r, bh = h - m.t - m.b;
       if(bw <= 0 || bh <= 0) return;
@@ -328,25 +327,19 @@
       setHover(best);
     });
     pathCv.addEventListener("pointerleave", () => setHover(null));
-    const pathAt = $q("#pe-path-at");
     // ---- panel sizes: the rail width in px, and the rest as fractions, remembered per viewer ----
-    const LAYOUT0 = {rail: 350, beside: 0.6, below: 0.7, pitch: 0.28};
+    const LAYOUT0 = {rail: 350, beside: 0.6, pitch: 0.28};
     let L = {...LAYOUT0};
     try { const v = JSON.parse(localStorage.getItem("pe-layout")); if(v) for(const k in LAYOUT0) if(isFinite(v[k])) L[k] = +v[k]; } catch {}
     const narrow = matchMedia("(max-width: 860px)");
     const gSplit = $q("#pe-g-split"), pitchBox = $q(".box.pitch");
     function applyLayout() {
-      const at = topEl.dataset.path;
-      gSplit.hidden = at === "off";
-      gSplit.classList.toggle("row", at === "below"); gSplit.classList.toggle("col", at !== "below");
       if(narrow.matches) {   // stacked: the stylesheet decides, so drop anything set here
-        root.style.gridTemplateColumns = topEl.style.gridTemplateColumns = topEl.style.gridTemplateRows = pitchBox.style.flex = "";
+        root.style.gridTemplateColumns = topEl.style.gridTemplateColumns = pitchBox.style.flex = "";
         return;
       }
       root.style.gridTemplateColumns = `${L.rail}px 8px minmax(0, 1fr)`;
-      const f = L[at] || 1, two = `minmax(0, ${f}fr) 8px minmax(0, ${1 - f}fr)`;
-      topEl.style.gridTemplateColumns = at === "beside" ? two : "minmax(0, 1fr)";
-      topEl.style.gridTemplateRows = at === "below" ? two : "minmax(0, 1fr)";
+      topEl.style.gridTemplateColumns = `minmax(0, ${L.beside}fr) 8px minmax(0, ${1 - L.beside}fr)`;
       pitchBox.style.flex = `0 0 ${L.pitch*100}%`;
     }
     const saveLayout = () => { try { localStorage.setItem("pe-layout", JSON.stringify(L)); } catch {} };
@@ -366,22 +359,14 @@
       L.rail = Math.round(clamp(e.clientX - r.left - padL - 4, 260, r.width*0.5));
     }, () => L.rail = LAYOUT0.rail);
     gutter(gSplit, e => {
-      const r = topEl.getBoundingClientRect(), at = topEl.dataset.path;
-      L[at] = at === "below" ? clamp((e.clientY - r.top)/r.height, 0.25, 0.85) : clamp((e.clientX - r.left)/r.width, 0.2, 0.85);
-    }, () => { const at = topEl.dataset.path; L[at] = LAYOUT0[at]; });
+      const r = topEl.getBoundingClientRect();
+      L.beside = clamp((e.clientX - r.left)/r.width, 0.2, 0.85);
+    }, () => L.beside = LAYOUT0.beside);
     gutter($q("#pe-g-pitch"), e => {
       const r = $q(".right").getBoundingClientRect(), b = pitchBox.getBoundingClientRect();
       L.pitch = clamp((b.bottom - e.clientY)/r.height, 0.12, 0.6);
     }, () => L.pitch = LAYOUT0.pitch);
     narrow.addEventListener("change", applyLayout);
-
-    function placePath(v) {
-      topEl.dataset.path = v; pathAt.value = v; $q("#pe-path-box").hidden = v === "off";
-      applyLayout();
-      try { localStorage.setItem("pe-path-at", v); } catch {}
-    }
-    pathAt.addEventListener("change", () => { placePath(pathAt.value); draw(); });
-    try { const v = localStorage.getItem("pe-path-at"); if(["below", "beside", "off"].includes(v)) placePath(v); } catch {}
     applyLayout();
 
     // ---- pitch vs tick, which is also the schedule editor ----
@@ -528,13 +513,12 @@
       const p0 = pts[0], dte = r => r.y + te(r.vy, r.vz) - te(p0.vy, p0.vz);
       const cols = [
         ["tick", r => String(r.t)],
-        ["segment", r => String(r.k + 1)],
         ["pitch", r => f(r.p, 2), "°"],
         ["vz", r => f(r.vz, 4)],
         ["vy", r => f(r.vy, 4)],
+        ["Δz", r => f(r.z, 2)],
         ["Δy", r => f(r.y, 2)],
         ["ΔTE", r => f(dte(r), 3)],
-        ["ΔTE/n", r => f(dte(r)/r.t, 4)],
       ];
       const rest = pts.slice(1);
       const parts = cols.map(([label, fn, unit = ""]) => {
