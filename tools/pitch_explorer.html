@@ -78,7 +78,7 @@
   <div class="left">
     <div>
       <h1>Elytra pitch explorer</h1>
-      <p class="sub">Fly a schedule of pitch segments from a starting velocity v0. Each segment moves its pitch linearly from start to end over its ticks, both ends included. Pitch is Minecraft's: negative is nose up. Physics is vanilla elytra flight at yaw 0, in double precision without the game's sine table.</p>
+      <p class="sub">Fly a schedule of pitch segments from a starting velocity v0. Each segment moves its pitch linearly from start to end over its ticks, both ends included. Pitch is Minecraft's: negative is nose up. Physics is vanilla elytra flight at yaw 0, with the game's sine lookup table.</p>
     </div>
     <div class="controls"><label for="pe-vz">v<sub>z</sub>0</label><input id="pe-vz" type="range" min="-0.5" max="3.5" step="0.001"><input id="pe-vz-t" type="text" aria-label="starting vz"></div>
     <div class="controls"><label for="pe-vy">v<sub>y</sub>0</label><input id="pe-vy" type="range" min="-3" max="2" step="0.001"><input id="pe-vy-t" type="text" aria-label="starting vy"></div>
@@ -116,14 +116,29 @@
     const css = getComputedStyle(document.documentElement);
     const T = Object.fromEntries(["bg", "panel", "line", "fg", "muted", "mono"].map(k => [k, css.getPropertyValue(`--${k}`).trim()]));
 
-    // One tick of update_fall_flying_movement at yaw 0, as tools/plot_field_replay.py `step`.
+    // Vanilla's Mth trig, as src/sim/mth.rs: a 65536-entry float table of sin over one turn,
+    // indexed with float arithmetic and a truncating cast, so pitch is quantized to ~0.0055°.
+    const F = Math.fround, RAD = F(Math.PI/180), IDX = F(10430.378);
+    const SIN = new Float32Array(65536);
+    for(let i=0;i<65536;i++) SIN[i] = Math.sin(i*Math.PI*2/65536);
+    const mthSin = x => SIN[Math.trunc(F(x*IDX)) & 0xFFFF];
+    const mthCos = x => SIN[Math.trunc(F(F(x*IDX) + 16384)) & 0xFFFF];
+    // look z, lift and the pull-up sine for a pitch in degrees. Pitch and lean are floats as in
+    // the game; lift alone is Math.cos on a double in vanilla, not Mth.
+    function trig(pitch) {
+      const lean = F(F(pitch)*RAD), c = Math.cos(lean);
+      return {lean, lookZ: mthCos(lean), lift: c*c, sin: mthSin(lean)};
+    }
+
+    // One tick of update_fall_flying_movement at yaw 0, as update_fall_flying_movement_reference
+    // in src/sim/entity.rs with the Mth lookup table.
     function step(vy, vz, pitch) {
-      const lean = pitch*Math.PI/180, lookZ = Math.cos(lean), lookHor = Math.abs(lookZ), lift = lookZ*lookZ;
+      const {lean, lookZ, lift, sin} = trig(pitch), lookHor = Math.abs(lookZ);
       const moveHor = Math.abs(vz);
       vy += G*(-1 + lift*0.75);
       if(lookHor > 0) {
         if(vy < 0) { const c = vy*-0.1*lift; vy += c; vz += lookZ*c/lookHor; }
-        if(lean < 0) { const c = moveHor*-Math.sin(lean)*0.04; vy += c*3.2; vz -= lookZ*c/lookHor; }
+        if(lean < 0) { const c = moveHor*-sin*0.04; vy += c*3.2; vz -= lookZ*c/lookHor; }
         vz += (lookZ/lookHor*moveHor - vz)*0.1;
       }
       return [vy*DRAG_Y, vz*DRAG_Z];
@@ -182,16 +197,17 @@
     }
 
     // ---- energy field: best one-tick ΔTE over pitch ----
+    // per pitch: lift, the sign of look z (0 when the look is vertical), and the pull-up sine
     const LIFT = [], SINK = [], LOOK = [];
-    for(let p=-90;p<=90;p+=0.5) { const l = p*Math.PI/180, c = Math.cos(l); LOOK.push(Math.abs(c) > 0); LIFT.push(c*c); SINK.push(l < 0 ? -Math.sin(l) : 0); }
+    for(let p=-90;p<=90;p+=0.5) { const q = trig(p); LOOK.push(Math.sign(q.lookZ)); LIFT.push(q.lift); SINK.push(q.lean < 0 ? -q.sin : 0); }
     function fieldGain(vz, vy) {
       let best = -Infinity; const mh = Math.abs(vz);
       for(let i=0;i<LIFT.length;i++) {
         const lift = LIFT[i]; let yy = vy + G*(-1 + lift*.75), zz = vz;
         if(LOOK[i]) {
-          const down = yy < 0 ? yy*-.1*lift : 0; yy += down; zz += down;
-          if(SINK[i]) { const up = mh*SINK[i]*.04; yy += up*3.2; zz -= up; }
-          zz += (mh - zz)*.1;
+          const d = LOOK[i], down = yy < 0 ? yy*-.1*lift : 0; yy += down; zz += d*down;
+          if(SINK[i]) { const up = mh*SINK[i]*.04; yy += up*3.2; zz -= d*up; }
+          zz += (d*mh - zz)*.1;
         }
         yy *= DRAG_Y; zz *= DRAG_Z;
         const g = (yy*yy + zz*zz - vy*vy - vz*vz)*.5/G + yy; if(g > best) best = g;
