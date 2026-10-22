@@ -26,6 +26,7 @@
   #lvl label { color: var(--muted); }
   #lvl input[type="range"] { width: 100%; accent-color: var(--fly); }
   #lvl input[type="text"] { width: 100%; background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; font: 12px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+  #lvl select { width: 100%; background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; font: 12.5px var(--ui); }
   #lvl button { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 8px; font: 12.5px var(--ui); cursor: pointer; }
   #lvl button:hover { border-color: var(--fly); }
   #lvl :focus-visible { outline: 2px solid var(--fly); outline-offset: 1px; }
@@ -68,6 +69,7 @@
       <h1>Level flight policy</h1>
       <p class="sub">Velocity → pitch policies solved by pumpdp with forward distance priced at λ: each tick's reward is ΔTE + w·Δz, w = λ·21.5/330 as in the sweeps. λ = 0 is the gain-rate pump; raising λ trades climb for forward speed, and the λ whose cycle climbs 0 is the fastest sustained level flight. Drag on the velocity plane to start a flight anywhere; the zoom follows the pointer over the plane and sits on v0 otherwise. Click the frontier to pick λ. Pitch is Minecraft's: negative is nose up, drawn up.</p>
     </div>
+    <div class="row"><label for="lv-fam">physics</label><select id="lv-fam"></select><span></span></div>
     <div class="row"><label for="lv-lam">λ</label><input id="lv-lam" type="range" min="0" step="1"><input id="lv-lam-t" type="text" aria-label="lambda"></div>
     <div class="row"><label></label><button id="lv-level" type="button">jump to level flight</button><span></span></div>
     <div class="row"><label for="lv-vz">v<sub>z</sub>0</label><input id="lv-vz" type="range" min="0" max="3.6" step="0.001"><input id="lv-vz-t" type="text" aria-label="starting vz"></div>
@@ -82,7 +84,7 @@
       <div class="box front"><canvas id="lv-front" aria-label="climb rate against forward speed for every lambda solved"></canvas></div>
       <div class="busy" id="lv-busy"></div>
     </div>
-    <p class="caption">Velocities and rates are in blocks per tick (× 20 for blocks per second). Each policy is solved discounted with horizon 3000 on a 0.01 b/t grid. Flights pick each tick's pitch as pumpdp does, the quarter degree maximizing the tick's reward plus the discounted V of where it lands; the zoom draws that choice. The limit cycle is pumpdp's own 60000-tick flight from the hand-flown reference's v0, read over its last 50000 ticks. Climb is total-energy gain per tick, which over whole cycles is height gain. Height swing is the cycle's peak-to-trough height after removing its mean climb. ΔTE is altitude plus |v|²/2g, with g = 0.08 b/t².</p>
+    <p class="caption">Velocities and rates are in blocks per tick (× 20 for blocks per second). Each policy is solved discounted with horizon 3000 on a 0.01 b/t grid. Flights pick each tick's pitch as pumpdp does, the quarter degree maximizing the tick's reward plus the discounted V of where it lands; the zoom draws that choice. The limit cycle is pumpdp's own 60000-tick flight from the hand-flown reference's v0, read over its last 50000 ticks. Climb is total-energy gain per tick, which over whole cycles is height gain. Height swing is the cycle's peak-to-trough height after removing its mean climb. ΔTE is altitude plus |v|²/2g, with g = 0.08 b/t². Physics k = 0.99 is pumpdp's --conv-lift-exp ablation, not Minecraft: the descent-to-forward conversion's outer lift factor becomes lift^k, which stops the vanilla policy's tick-rate chatter; maps and flights both use it, and the frontier draws the other physics' faintly.</p>
   </div>
   <div class="right">
     <div class="top">
@@ -105,11 +107,14 @@
     const FADE = 0.06;   // opacity of the flight's last tick
     const V0REF = DATA.v0, GR = DATA.grid;
 
+    // The conversion's outer lift factor is lift^K, pumpdp's --conv-lift-exp; 1 is vanilla. Set by the physics picked.
+    let K = 1;
+    const outer = lift => K === 1 ? lift : lift**K;
     // One tick at yaw 0, v_z >= 0: pumpdp's and field's f64 kernel.
     function step(vy, vz, p) {
       const lean = p*Math.PI/180, c = Math.cos(lean), lift = c*c, hor = Math.abs(vz);
       vy += G*(-1 + lift*0.75);
-      if(vy < 0) { const k = vy*-0.1*lift; vy += k; vz += k; }
+      if(vy < 0) { const k = vy*-0.1*outer(lift); vy += k; vz += k; }
       if(lean < 0) { const u = hor*-Math.sin(lean)*0.04; vy += u*3.2; vz -= u; }
       vz += (hor - vz)*0.1;
       return [vy*DRAG_Y, vz*DRAG_Z];
@@ -125,7 +130,7 @@
       const q = (vy, vz, i) => {
         const [lift, up] = FT[i], hor = Math.abs(vz);
         let y = vy + G*(-1 + lift*0.75), z = vz;
-        if(y < 0) { const k = y*-0.1*lift; y += k; z += k; }
+        if(y < 0) { const k = y*-0.1*outer(lift); y += k; z += k; }
         const u = hor*up*0.04; y += u*3.2; z -= u;
         z += (hor - z)*0.1; y *= DRAG_Y; z *= DRAG_Z;
         const cy = Math.min(Math.max(y, vy0), yHi), cz = Math.min(Math.max(z, 0), zHi);
@@ -188,15 +193,21 @@
       return {P, VY, VZ, Y, Z, TE, n};
     }
     // ---- state ----
-    const maps = DATA.maps;
-    $q("#lv-busy").textContent = `inflating ${maps.length} maps…`;
-    await Promise.all(maps.map(async m => { m.raw = await decode(m.pitch); m.pitch = null; }));
-    $q("#lv-busy").textContent = "";
-    for(const m of maps) m.cyc = {climb: m.climb, fwd: m.fwd};
-    // zhw: the zoom's half-width, b/t, along its shorter side
-    const S = {lam: 4.3, vz: V0REF[1], vy: V0REF[0], n: 400, zhw: 0.15};
+    const FAMS = DATA.fams;
+    for(const f of FAMS) for(const m of f.maps) m.cyc = {climb: m.climb, fwd: m.fwd};
+    // a family's maps are inflated the first time it's picked
+    async function inflate(f) {
+      if(f.ready) return;
+      $q("#lv-busy").textContent = `inflating ${f.maps.length} maps…`;
+      await Promise.all(f.maps.map(async m => { m.raw = await decode(m.pitch); m.pitch = null; }));
+      $q("#lv-busy").textContent = ""; f.ready = true;
+    }
+    // zhw: the zoom's half-width, b/t, along its shorter side; k: the physics, a family's conv-lift-exp
+    const S = {lam: 4.3, vz: V0REF[1], vy: V0REF[0], n: 400, zhw: 0.15, k: 1};
     try { Object.assign(S, JSON.parse(localStorage.getItem("level-explorer-1") || "{}")); } catch(e) {}
     S.n = Math.min(600, Math.max(10, S.n));
+    let fam = FAMS.find(f => f.k === S.k) || FAMS[0], maps = fam.maps;
+    await inflate(fam); K = fam.k;
     const nearestIdx = lam => maps.reduce((b, m, i) => Math.abs(m.lam - lam) < Math.abs(maps[b].lam - lam) ? i : b, 0);
     let idx = nearestIdx(S.lam);
     // policy flies, zpolicy draws the zoom; both the lookahead on V once it's loaded, else the pitch map
@@ -300,7 +311,7 @@
       ctx.fillStyle = T.bg; ctx.fillRect(m.l, m.t, bw, bh);
       ctx.imageSmoothingEnabled = false;
       if(zoom) {
-        const key = [idx, exact, xr, yr, bw, bh].join();
+        const key = [K, idx, exact, xr, yr, bw, bh].join();
         if(zcache.key !== key) zcache = {key, im: exactImage(xr[0], yr[1], sc, bw, bh, exact ? 3 : 2)};
         const [im, iw, ih] = zcache.im; ctx.drawImage(im, m.l, m.t, iw, ih);
       }
@@ -421,6 +432,10 @@
       axes(ctx, X, Y, xr, yr, m, bw, bh, 5, "forward (b/t)", "climb (b/t)", w, h, true);
       ctx.save(); ctx.beginPath(); ctx.rect(m.l, m.t, bw, bh); ctx.clip();
       ctx.strokeStyle = ZERO; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(m.l, Y(0)); ctx.lineTo(m.l+bw, Y(0)); ctx.stroke(); ctx.setLineDash([]);
+      for(const f of FAMS) if(f !== fam) {
+        ctx.strokeStyle = T.muted; ctx.lineWidth = 1.2; ctx.globalAlpha = 0.35; ctx.beginPath();
+        f.maps.forEach((p, i) => i ? ctx.lineTo(X(p.cyc.fwd), Y(p.cyc.climb)) : ctx.moveTo(X(p.cyc.fwd), Y(p.cyc.climb))); ctx.stroke();
+      }
       ctx.strokeStyle = T.rate; ctx.lineWidth = 1.4; ctx.globalAlpha = 0.6; ctx.beginPath();
       pts.forEach((p, i) => i ? ctx.lineTo(X(p.cyc.fwd), Y(p.cyc.climb)) : ctx.moveTo(X(p.cyc.fwd), Y(p.cyc.climb))); ctx.stroke();
       ctx.globalAlpha = 1; ctx.fillStyle = T.rate;
@@ -487,7 +502,7 @@
       renderCycle(); drawFront(); refly(); syncControls(); save();
       $q("#lv-busy").textContent = "fetching V…";
       loadV(mp).then(V => {
-        if(idx !== at) return;
+        if(maps[idx] !== mp) return;
         if(V) { const L = lookahead(V, mp.w); policy = L.exact; zpolicy = L.quick; exact = true; }
         $q("#lv-busy").textContent = V ? "" : `couldn't fetch ${mp.dir}/V.npy: flying the pitch map, bilinear between nodes, not pumpdp's lookahead`;
         refly();
@@ -500,6 +515,16 @@
     lamR.addEventListener("input", () => { setIdx(+lamR.value); lamT.value = lamStr(maps[+lamR.value].lam); });
     lamT.addEventListener("change", () => { const v = parseFloat(lamT.value); if(isFinite(v)) setIdx(nearestIdx(v)); else lamT.value = lamStr(maps[idx].lam); });
     $q("#lv-level").addEventListener("click", () => { const lv = levelCross(); if(lv) setIdx(lv.i); });
+    // physics: switch family, keeping the nearest λ
+    const famSel = $q("#lv-fam");
+    famSel.innerHTML = FAMS.map((f, i) => `<option value="${i}">${f.k === 1 ? "vanilla (chatters)" : `k = ${f.k}`}</option>`).join("");
+    famSel.value = FAMS.indexOf(fam);
+    famSel.addEventListener("change", async () => {
+      const f = FAMS[+famSel.value], lam = maps[idx].lam;
+      await inflate(f);
+      fam = f; maps = f.maps; K = f.k; S.k = f.k;
+      lamR.max = maps.length - 1; setIdx(nearestIdx(lam));
+    });
     for(const k in pairs) {
       const r = $q(`#lv-${k}`), t = $q(`#lv-${k}-t`), [lo, hi, dg] = pairs[k];
       const set = v => { S[k] = k === "n" ? Math.round(v) : v; scheduleFly(); };
