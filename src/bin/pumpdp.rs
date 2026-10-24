@@ -20,7 +20,13 @@
 //! which a stationary policy can't do, and no lambda finds them.
 //!
 //! The state is velocity alone: the flight kernel reads nothing else, and ΔTE doesn't depend on
-//! height. `V`/`h` live on the nodes and are read between them bilinearly (semi-Lagrangian).
+//! height. `V`/`h` live on the nodes and are read between them (semi-Lagrangian), bilinearly in
+//! the solve. Bilinear's bias (~dv²/8 · V'', 1e-4 blocks at dv 0.01) varies with where a next
+//! state lands in its cell, and late in the dive Q is flat to 1e-5 over several degrees, so the
+//! argmax follows grid lines: the policy aliases. `--extract cubic` reads the solved nodes C1 for
+//! the policy and the flight only; with `--dv 0.0025` the glide's pitch noise falls from 1.5 to
+//! 0.2 degrees RMS (2026-10-22, k 0.99, lambda 0 and 4.3). A cubic read in the solve itself is
+//! exploited by the max (see `Interp`).
 //! A step leaving the grid is clamped onto its edge, and `r` is charged to the clamped state, so
 //! the clamp only ever destroys energy (the grid holds the origin, so a clamp shrinks |v|). Were
 //! `r` the true ΔTE, the energy a clamp destroys would be credited and never paid back: a pump.
@@ -28,7 +34,8 @@
 //! Solved by modified policy iteration: a sweep maximizes over `--dp`-degree pitches at every
 //! node, then `--evals` sweeps evaluate that policy with its next states cached. `avg` damps every
 //! update by `--tau` (the aperiodicity transform: the optimal flight is a cycle, and undamped
-//! relative value iteration on a periodic chain oscillates with its period). In `avg`, every
+//! relative value iteration on a periodic chain oscillates with its period); `disc` takes it too,
+//! undamped by default. In `avg`, every
 //! improvement sweep brackets the grid problem's rate: `min (Th - h) <= ρ <= max (Th - h)`.
 //!
 //! The grid's answer is then flown exactly: from `--v0`, each tick the pitch maximizing the
@@ -60,6 +67,26 @@ static CONV_EXP: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
 #[derive(Clone, Copy, PartialEq, ValueEnum, Debug)]
 enum Mode { Disc, Avg }
 
+/// How `V` is read between nodes.
+#[derive(Clone, Copy, PartialEq, ValueEnum, Debug)]
+enum Interp {
+    /// Bilinear: monotone, so value iteration contracts, but its gradient jumps at every grid
+    /// line, and the argmax over a tick's arc of next states sticks to those lines: the policy
+    /// steps as the flight crosses them.
+    Linear,
+    /// Catmull-Rom bicubic on the 4x4 nodes around the point: C1, so the argmax moves smoothly.
+    /// Not monotone (next to a jump it overshoots by about 7% of it), and unclipped it made
+    /// value iteration diverge (2026-10-22, lambda 0: V reached inf by sweep 850).
+    Cubic,
+    /// Catmull-Rom clipped to the range of the cell's four corners, the semi-Lagrangian limiter:
+    /// no read leaves its corners' range, so the iteration stays bounded. C1 where V is smooth;
+    /// the clip only bites near an extremum or a kink. Bounded is not enough: at lambda 4.3 the
+    /// solve never converged, its policy parking in a steady glide and flipping 22 <-> 36 degrees
+    /// each tick to farm the read's in-cell error, worth +124 blocks of V over the horizon. Any
+    /// read that isn't a convex combination of nodes can be farmed by the max; use it to extract.
+    Clipped,
+}
+
 #[derive(Parser)]
 #[command(allow_negative_numbers = true)]
 struct Args {
@@ -68,9 +95,9 @@ struct Args {
     /// Discount per tick, `disc` only.
     #[arg(long, default_value_t = 0.99)]
     discount: f64,
-    /// Damping of every `avg` update, in (0, 1].
-    #[arg(long, default_value_t = 0.5)]
-    tau: f64,
+    /// Damping of every update, in (0, 1]; default 0.5 in `avg`, 1 (none) in `disc`.
+    #[arg(long)]
+    tau: Option<f64>,
     /// Node spacing, blocks/tick, both axes.
     #[arg(long, default_value_t = 0.01)]
     dv: f64,
@@ -148,6 +175,13 @@ struct Args {
     /// 0 is the gain rate.
     #[arg(long, default_value_t = 0.0)]
     lambda: f64,
+    /// How the solve reads `V` between nodes.
+    #[arg(long, value_enum, default_value_t = Interp::Linear)]
+    interp: Interp,
+    /// How the written policy map and the flight read `V`; defaults to `--interp`. Cubic on a
+    /// linear solve smooths the policy without touching the solve's convergence.
+    #[arg(long, value_enum)]
+    extract: Option<Interp>,
     #[arg(long)]
     out: String,
 }
@@ -178,7 +212,7 @@ fn trig(p: f64) -> (f64, f64) {
 
 fn ke(vy: f64, vz: f64) -> f64 { (vy * vy + vz * vz) * 0.5 / GRAVITY }
 
-struct Grid { vy0: f64, dv: f64, ny: usize, nz: usize }
+struct Grid { vy0: f64, dv: f64, ny: usize, nz: usize, interp: Interp }
 
 /// Where a velocity lands on the grid: the lower-left node and the bilinear weights.
 #[derive(Clone, Copy, Default)]
@@ -205,11 +239,46 @@ impl Grid {
     }
     #[inline]
     fn read(&self, v: &[f64], c: Cell) -> f64 {
+        match self.interp {
+            Interp::Linear => {}
+            Interp::Cubic => return self.read_cubic(v, c),
+            Interp::Clipped => {
+                let n = c.n as usize;
+                let corners = [v[n], v[n + 1], v[n + self.nz], v[n + self.nz + 1]];
+                let lo = corners.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+                let hi = corners.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+                return self.read_cubic(v, c).clamp(lo, hi);
+            }
+        }
         let n = c.n as usize;
         let (a, b) = (c.a as f64, c.b as f64);
         let lo = v[n] * (1.0 - b) + v[n + 1] * b;
         let hi = v[n + self.nz] * (1.0 - b) + v[n + self.nz + 1] * b;
         lo * (1.0 - a) + hi * a
+    }
+}
+
+impl Grid {
+    /// Catmull-Rom: the cubic through the four nodes around the point with slopes the central
+    /// differences, so it interpolates and is C1. Nodes past the edge repeat the edge's.
+    fn read_cubic(&self, v: &[f64], c: Cell) -> f64 {
+        let w = |t: f64| {
+            let (t2, t3) = (t * t, t * t * t);
+            [(-t3 + 2.0 * t2 - t) * 0.5, (3.0 * t3 - 5.0 * t2 + 2.0) * 0.5, (-3.0 * t3 + 4.0 * t2 + t) * 0.5, (t3 - t2) * 0.5]
+        };
+        let (j, k) = ((c.n as usize / self.nz) as isize, (c.n as usize % self.nz) as isize);
+        let (wa, wb) = (w(c.a as f64), w(c.b as f64));
+        let mut sum = 0.0;
+        for (dj, wj) in wa.iter().enumerate() {
+            let jj = (j + dj as isize - 1).clamp(0, self.ny as isize - 1) as usize;
+            let row = &v[jj * self.nz..];
+            let mut r = 0.0;
+            for (dk, wk) in wb.iter().enumerate() {
+                r += wk * row[(k + dk as isize - 1).clamp(0, self.nz as isize - 1) as usize];
+            }
+            sum += wj * r;
+        }
+        sum
     }
 }
 
@@ -249,11 +318,12 @@ fn write_npy(path: &std::path::Path, shape: &[usize], data: &[f64]) {
 fn main() {
     let a = Args::parse();
     let Args { mode, discount, tau, dv, vymin, vymax, vzmax, dp, evals, sweeps, tol, fine, gap, every, limit, .. } = a;
+    let tau = tau.unwrap_or(match mode { Mode::Disc => 1.0, Mode::Avg => 0.5 });
     assert!(tau > 0.0 && tau <= 1.0);
     CONV_CURV.set(a.conv_curv).unwrap();
     CONV_EXP.set(a.conv_lift_exp).unwrap();
     let jy0 = (-vymin / dv).round() as usize;
-    let g = Grid { vy0: -(jy0 as f64) * dv, dv, ny: jy0 + (vymax / dv).round() as usize + 1, nz: (vzmax / dv).round() as usize + 1 };
+    let mut g = Grid { vy0: -(jy0 as f64) * dv, dv, ny: jy0 + (vymax / dv).round() as usize + 1, nz: (vzmax / dv).round() as usize + 1, interp: a.interp };
     let pitches = |d: f64| -> Vec<f64> {
         let n = (2.0 * limit / d).round() as i64;
         assert!((n as f64 * d - 2.0 * limit).abs() < 1e-9, "a pitch step of {d} does not divide {}", 2.0 * limit);
@@ -267,11 +337,11 @@ fn main() {
     let sc = a.obj_concavity * 0.5 / GRAVITY;
     let mid = |vy: f64, vz: f64| if sc == 0.0 { (0.0, 0.0) } else { arc_mid(vy, vz, &fts) };
     let mids: Vec<(f64, f64)> = (0..g.len()).into_par_iter().map(|n| { let (vy, vz) = g.node(n); mid(vy, vz) }).collect();
-    let (gam, damp) = match mode { Mode::Disc => (discount, 1.0), Mode::Avg => (1.0, tau) };
+    let (gam, damp) = match mode { Mode::Disc => (discount, tau), Mode::Avg => (1.0, tau) };
     let rc = g.cell(a.r#ref[0], a.r#ref[1]);
     eprintln!("{mode:?}: grid {} x {} = {} nodes (dv {dv}, vy {:.2}..{vymax}, vz 0..{vzmax}), {} pitches; {}",
               g.ny, g.nz, g.len(), g.vy0, ps.len(),
-              match mode { Mode::Disc => format!("discount {discount} (horizon {:.0} ticks)", 1.0 / (1.0 - discount)), Mode::Avg => format!("tau {tau}") });
+              match mode { Mode::Disc => format!("discount {discount} (horizon {:.0} ticks), tau {tau}", 1.0 / (1.0 - discount)), Mode::Avg => format!("tau {tau}") });
 
     let clock = std::time::Instant::now();
     let mut v = vec![0.0f64; g.len()];
@@ -314,6 +384,7 @@ fn main() {
     }
 
     // The policy on the fine grid, its margin, and its flight.
+    g.interp = a.extract.unwrap_or(a.interp);
     let rank = |vy: f64, vz: f64| -> (usize, f64, f64) {
         let m = mid(vy, vz);
         let q: Vec<f64> = fts.iter().map(|&t| { let (c, r, pen) = transition(&g, vy, vz, t, w, sc, m); r - pen + gam * g.read(&v, c) }).collect();
@@ -361,11 +432,11 @@ fn main() {
     write_npy(&out.join("q1.npy"), &shape, &map.iter().map(|m| m.2).collect::<Vec<_>>());
     write_npy(&out.join("fly.npy"), &[a.fly, 5], &rows);
     let objective = match mode {
-        Mode::Disc => format!("disc discount {discount} horizon {:.1}", 1.0 / (1.0 - discount)),
+        Mode::Disc => format!("disc discount {discount} horizon {:.1}", 1.0 / (1.0 - discount)) + &if tau == 1.0 { String::new() } else { format!(" tau {tau}") },
         Mode::Avg => format!("avg tau {tau}"),
     } + &if a.lambda == 0.0 { String::new() } else { format!(" lambda {} w {:.10}", a.lambda, w_of_lambda(a.lambda)) };
     let summary = format!(
-        "pumpdp {objective} limit {limit}{}\ngrid dv {dv} vy {}..{vymax} vz 0..{vzmax} ({} x {}) dp {dp} evals {evals} fine {fine} gap {gap}\n\
+        "pumpdp {objective} limit {limit}{}\ngrid dv {dv} vy {}..{vymax} vz 0..{vzmax} ({} x {}) dp {dp} evals {evals} fine {fine} gap {gap} interp {:?} extract {:?}\n\
          ref {:?} v0 {:?}\nsweeps {done} tol {tol}\nbracket (min, max of Tv - v) {:.8} {:.8}\n\
          period {} ticks\nflown rate over last {w} ticks {flown:.6} b/tick ({:.4} b/s); first half of that window {half:.6}; clamped ticks {clamped}\n\
          flown forward speed over that window {fwd:.6} b/tick ({:.4} b/s)\n\
@@ -373,7 +444,7 @@ fn main() {
         format!("{}{}", if a.conv_curv == 1.0 { String::new() } else { format!(" conv_curv {}", a.conv_curv) },
                 if a.conv_lift_exp == 1.0 { String::new() } else { format!(" conv_lift_exp {}", a.conv_lift_exp) })
             + &if a.obj_concavity == 0.0 { String::new() } else { format!(" obj_concavity {}", a.obj_concavity) },
-        g.vy0, g.ny, g.nz, a.r#ref, a.v0, rate.0, rate.1, period.map_or("none".to_string(), |p| p.to_string()), flown * 20.0, fwd * 20.0, clock.elapsed().as_secs_f64());
+        g.vy0, g.ny, g.nz, a.interp, g.interp, a.r#ref, a.v0, rate.0, rate.1, period.map_or("none".to_string(), |p| p.to_string()), flown * 20.0, fwd * 20.0, clock.elapsed().as_secs_f64());
     std::fs::write(out.join("spec.txt"), &summary).unwrap();
     print!("{summary}");
 }
