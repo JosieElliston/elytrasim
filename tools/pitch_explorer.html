@@ -112,7 +112,15 @@
     const $q = s => root.querySelector(s);
     const G = 0.08, DRAG_Y = Math.fround(0.98), DRAG_Z = Math.fround(0.99);
     const COLORS = ["#ffd166", "#56d4c0", "#d2a8ff", "#ff9e7a", "#79c0ff", "#b5e07a"];
-    const color = k => COLORS[k % COLORS.length];
+    // segment k's color; each segment keeps its own slot (s.c) so reordering doesn't recolor it.
+    // A segment without one, from a loaded schedule or the add button, takes the lowest free slot.
+    const color = k => {
+      for(const s of S.segs) if(s.c === undefined) {
+        const used = new Set(S.segs.map(g => g.c));
+        s.c = 0; while(used.has(s.c)) s.c++;
+      }
+      return COLORS[S.segs[k].c % COLORS.length];
+    };
     const css = getComputedStyle(document.documentElement);
     const T = Object.fromEntries(["bg", "panel", "line", "fg", "muted", "mono"].map(k => [k, css.getPropertyValue(`--${k}`).trim()]));
 
